@@ -59,7 +59,7 @@ Both install options run without sudo and keep working if you move or delete the
 - Named accounts with multiple history folders and deduplication of copied records.
 - Synced machine ledgers: one shared folder, with each machine importing the others so all stats appear in one dashboard.
 - Available usage limits, up to three limits you can pin to the panel and dashboard overview, optional monthly plan prices, and Omarchy theme colors.
-- Desktop notifications when a weekly or monthly limit resets or banked reset credits arrive, with the provider's own mark on the popup.
+- Desktop notifications when a weekly or monthly limit resets, a session limit resets after reaching 90%, or banked reset credits arrive, with the provider's own mark on the popup.
 - A bar widget with the latest six hourly token totals, reset-aware limit meters, agent launch commands, and extra providers of your own.
 
 The hourly bars show event-timed usage in your local time zone. Hour labels, reset times, and dashboard timestamps follow the 12- or 24-hour format selected for Omarchy's bar clock. Hermes reports accumulating session totals without request timestamps. Those tokens remain in the day total and are shown separately as having no exact hour. Agent Pulse checks local histories every 15 seconds while a view is open. Counts advance when an agent records usage, usually after a model response, rather than estimating tokens mid-stream. The full history, synced ledgers, and provider limits still refresh on their normal schedule. The dashboard starts on Today. Source, account, and model controls live under Filters, while Settings separates sources, accounts, pricing, sync, and appearance.
@@ -86,7 +86,7 @@ The widget reads its settings from its entry in `bar.layout` in `~/.config/omarc
 
 ## Reset notifications
 
-After every refresh, the dashboard compares each provider's limits against the previous run and sends a desktop notification when a weekly or monthly window resets — or when banked reset credits arrive, which is how Codex delivers dropped resets. Short windows never notify: a label shaped in minutes or hours, or named a session, is excluded. Alerts cover Codex and Claude by default; adding a provider to the dashboard never silently opts it in. Extend the list by running the notifier yourself with more providers:
+After every refresh, the dashboard compares each provider's limits against the previous run and sends a desktop notification when a weekly or monthly window resets — or when banked reset credits arrive, which is how Codex delivers dropped resets. Short windows, such as Claude's 5-hour session or any label shaped in minutes or hours, notify only when they reached 90% or more before resetting. Alerts cover Codex and Claude by default; adding a provider to the dashboard never silently opts it in. Extend the list by running the notifier yourself with more providers:
 
 ```sh
 ~/.local/bin/omarchy-usage-dashboard-notify-resets --provider commandcode

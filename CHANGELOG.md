@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Notify when a session limit, such as Claude's 5-hour window, resets after reaching 90% or more. Sessions below 90% still reset quietly, and a session that leaves the usage record or loses its reset time after resetting still counts.
+
 ## 1.8.0 - 2026-09-26
 
 - Agent Pulse adds a live Today counter from recorded local usage, hourly token history, a clearer source picker, reset-aware limits to watch, and up to three pinned limits. The dashboard brings the key totals and controls forward and keeps the full model, route, session, account, pricing, and coverage views.

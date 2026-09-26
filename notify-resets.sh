@@ -10,9 +10,12 @@
 #     reset, or a surprise reset that re-anchors the window), or
 #   - a provider's banked reset credits (resetCreditsAvailable) increase,
 #     which is how Codex/Grok deliver dropped resets.
-# Short windows never notify: a label shaped in minutes or hours ("5h
-# window", "30m window", "5 hours") or named a session ("Session (5-hour)")
-# is excluded, so only weekly and monthly windows can alert.
+# Short windows notify only when they were nearly spent: a label shaped in
+# minutes or hours ("5h window", "30m window", "5 hours") or named a session
+# ("Session (5-hour)") alerts on reset only if it stood at 90% or more.
+# Those windows can drop out of a record, or lose their reset time, until
+# the next use opens a new one, so either of those after the old reset time
+# counts as a reset too.
 #
 # Alerts stay limited to the providers passed here -- codex and claude by
 # default. Adding a provider to the usage dashboard must not silently opt it
@@ -56,20 +59,23 @@ done
 # Timestamps are normalized here (fractional seconds stripped, +00:00 -> Z) so
 # snapshot comparisons are jitter-free and fromdate can parse them.
 current=$(jq -s '
+  def stamp: if type == "string" then sub("[.][0-9]+"; "") | sub("\\+00:00$"; "Z") else . end;
   {
+    ids: [ .[].id ],
     limits: ([ .[]
       | .id as $id | .name as $name
       | (.limits // [])[]
-      | select(.resetsAt and .label)
-      | select(.label | test("session|\\b[0-9]+\\s*-?\\s*h(our)?s?\\b|\\b[0-9]+\\s*-?\\s*m(in(ute)?s?)?\\b"; "i") | not)
+      | select(.label)
+      | (.label | test("session|\\b[0-9]+\\s*-?\\s*h(our)?s?\\b|\\b[0-9]+\\s*-?\\s*m(in(ute)?s?)?\\b"; "i")) as $short
+      | select($short or .resetsAt)
       | { key: ($id + "|" + .label),
-          value: {
+          value: ({
             id: $id,
             name: $name,
             label: .label,
             percent: (.percent // 0),
-            resetsAt: (.resetsAt | sub("[.][0-9]+"; "") | sub("\\+00:00$"; "Z"))
-          } }
+            resetsAt: (.resetsAt | stamp)
+          } + if $short then { short: true } else {} end) }
     ] | from_entries),
     credits: ([ .[]
       | select(.resetCreditsAvailable != null)
@@ -96,13 +102,25 @@ if [[ -s $SNAP ]]; then
     | ([ $new.limits | to_entries[]
         | . as $e
         | ($old.limits[$e.key] // null) as $prev
-        | select($prev != null)
+        | select($prev != null and $e.value.short != true)
         | (($e.value.resetsAt | epoch) // empty) as $newT
         | (($prev.resetsAt | epoch) // empty) as $oldT
         | select($newT - $oldT > 3600)
         | { id: $e.value.id, name: $e.value.name,
             line: "\($e.value.label): was \(($prev.percent * 100) | round)%, now \(($e.value.percent * 100) | round)%" }
       ]) as $limitEvents
+    | ([ $old.limits | to_entries[]
+        | select(.value.short == true and .value.percent >= 0.9)
+        | . as $p
+        | select($new.ids | index($p.value.id))
+        | (($p.value.resetsAt | epoch) // empty) as $oldT
+        | ($new.limits[$p.key] // null) as $cur
+        | (if $cur == null then null else ($cur.resetsAt | epoch) end) as $newT
+        | select(($newT != null and $newT - $oldT > 3600)
+            or (now >= $oldT - 300 and ($newT == null or $cur.percent < $p.value.percent)))
+        | { id: $p.value.id, name: ($cur.name // $p.value.name),
+            line: "\($p.value.label): was \(($p.value.percent * 100) | round)%, now \((($cur.percent // 0) * 100) | round)%" }
+      ]) as $shortEvents
     | ([ $new.credits | to_entries[]
         | . as $e
         | ($old.credits[$e.key] // null) as $prev
@@ -110,7 +128,7 @@ if [[ -s $SNAP ]]; then
         | { id: $e.value.id, name: $e.value.name,
             line: "Banked resets: \($prev.credits) -> \($e.value.credits)" }
       ]) as $creditEvents
-    | ($limitEvents + $creditEvents)
+    | ($limitEvents + $shortEvents + $creditEvents)
     | group_by(.id)
     | map({ id: .[0].id, name: .[0].name, body: (map(.line) | join("\n")) })
     | .[] | [.id, .name, .body] | @tsv
