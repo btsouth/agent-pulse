@@ -25,6 +25,10 @@ with tempfile.TemporaryDirectory(prefix='usage-ui-qa-') as tmp:
         }
         function qaPulse(): string { return JSON.stringify({live:root.liveTodayView(),tokens:root.pulseTokens(),displayed:pulseCounter.displayedTokens,status:root.pulseStatus()}) }
         function qaPulseReload(): void { pulseFile.reload() }
+        function qaScan(quiet: string): string {
+            if (quiet !== "") root.refresh(quiet === "true")
+            return JSON.stringify({running:scan.running,loading:root.viewLoading,enabled:scroll.enabled,opacity:scroll.opacity})
+        }
         function qaPin(): string {
             return JSON.stringify({visible:pinnedColumn.parent.visible,pins:root.pinnedLimits.map(pin => {
                 var limit=root.pinnedWindow(pin)
@@ -125,10 +129,26 @@ with tempfile.TemporaryDirectory(prefix='usage-ui-qa-') as tmp:
   time.sleep(1.2)
   settled=json.loads(ipc('qaPulse'))
   assert settled['displayed']==240,settled
+  def scan_state(quiet=''):
+   return json.loads(ipc('qaScan',quiet))
+  for _ in range(50):
+   if not scan_state()['running']:break
+   time.sleep(.1)
+  background=scan_state('true')
+  assert background=={'running':True,'loading':False,'enabled':True,'opacity':1},background
+  navigation=scan_state('false')
+  assert navigation['running'] and navigation['loading'] and not navigation['enabled'],navigation
+  for _ in range(50):
+   done=scan_state()
+   if not done['running']:break
+   time.sleep(.1)
+  time.sleep(.3)
+  done=scan_state()
+  assert done=={'running':False,'loading':False,'enabled':True,'opacity':1},done
   ipc('qaAdd');time.sleep(.4);ipc('qaClick');time.sleep(.3);ipc('qaFill');ipc('qaScroll');time.sleep(.3);ipc('capture',str(b/'account-editor.png'));time.sleep(.3);ipc('qaSave');time.sleep(1)
   settings=json.loads((b/'config/omarchy/ai-usage/settings.json').read_text())
   assert settings['accounts'][0]['directories']==[{'provider':'codex','path':'/tmp/qa/.codex'},{'provider':'codex','path':'/tmp/qa-copy/.codex'}],settings
-  print('QML clock, source picker, three pinned limits and individual unpin, live pulse, and account editor passed at 1000x640')
+  print('QML clock, source picker, three pinned limits and individual unpin, live pulse, quiet background refresh, and account editor passed at 1000x640')
  finally:
   proc.terminate();out=proc.communicate(timeout=5)[0]
   if any(e in out for e in ['ReferenceError','TypeError','Unable to assign','Failed to load']):raise RuntimeError(out)

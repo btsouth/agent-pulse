@@ -3,6 +3,7 @@
 ## 1.8.0 - 2026-09-26
 
 - Agent Pulse adds a live Today counter from recorded local usage, hourly token history, a clearer source picker, reset-aware limits to watch, and up to three pinned limits. The dashboard brings the key totals and controls forward and keeps the full model, route, session, account, pricing, and coverage views.
+- Update the dashboard in place when live history, the five-minute timer, or Refresh brings new usage. The page no longer dims and locks on every background scan. Only a view change (period, filter, drill-in, source) holds the page, and one that answers within a quarter second shows no dimming.
 - Restore the bar panel's top-model breakdown across all routes. Returning to All sources in analytics now includes every source again; focusing an excluded source includes that source while leaving other exclusions in place.
 - Show SOURCE inside the bar panel's picker and mark the selected menu row without increasing the trigger height. Keep the compact Main and Second labels.
 - Put the panel source picker first, beside Analytics, so source focus stays visible above the totals and pinned limits.

@@ -151,6 +151,14 @@ Scope {
     property string settingsTab: "sources"
     property string error: ""
     property bool pending: false
+    property bool pendingQuiet: true
+    // A quiet scan refreshes the view already on screen, so the page stays
+    // readable and scrollable while it runs. Only a scan for a view the reader
+    // just asked for holds the page, since the rows shown are not theirs yet.
+    property bool scanQuiet: true
+    readonly property bool viewLoading: scan.running && !scanQuiet
+    property bool viewDimmed: false
+    onViewLoadingChanged: if (!viewLoading) viewDimmed = false
     property var themeData: null
     property bool themePending: false
     property var draftEnabled: ["codex", "claude", "opencode-go"]
@@ -275,7 +283,7 @@ Scope {
         pulseSummary = value
         pulseFailed = false
         nowMs = Date.now()
-        if (changed && !live.running && !settingsOpen) refresh()
+        if (changed && !live.running && !settingsOpen) refresh(true)
     }
     function money(n) { return "$" + Number(n || 0).toLocaleString(Qt.locale("en_US"), 'f', 2) }
     function shortDate(value) { return value ? Qt.formatDate(new Date(value+"T12:00:00"),"MMM d") : "" }
@@ -309,9 +317,15 @@ Scope {
         // the report matches the whole model family either way.
         root.drill(field, root.breakdown === "accounts" ? row.accountId : row.name, root.routeCount(row) > 1 ? "" : row.provider)
     }
-    function refresh() {
-        if (scan.running) { pending = true; return }
-        error = ""
+    function refresh(quiet = false) {
+        if (scan.running) {
+            if (!quiet) scanQuiet = false
+            pendingQuiet = pending ? pendingQuiet && quiet : quiet
+            pending = true
+            return
+        }
+        if (!quiet) error = ""
+        scanQuiet = quiet
         scan.command = ["python3", helper, "report", "--days", String(days), "--provider", provider]
         for (var field in selection) {
             // A list-valued filter (excluded sources) repeats its flag once per
@@ -323,9 +337,9 @@ Scope {
         }
         scan.running = true
     }
-    function refreshLive() {
+    function refreshLive(quiet = true) {
         if (!live.running) live.running = true
-        root.refresh()
+        root.refresh(quiet)
     }
     function refreshPulse() {
         if (Quickshell.env("AI_USAGE_DEMO") !== "1" && window.visible && !settingsOpen && !live.running && !pulse.running)
@@ -394,7 +408,7 @@ Scope {
         stderr: StdioCollector { onStreamFinished: { if (text.trim()) console.warn(text.trim()) } }
         onExited: function(code) {
             if (code !== 0) root.error = "The scan failed. Previously loaded data is still shown."
-            if (root.pending) { root.pending = false; root.refresh() }
+            if (root.pending) { root.pending = false; root.refresh(root.pendingQuiet) }
         }
     }
     Process {
@@ -406,7 +420,7 @@ Scope {
         onStarted: { write(payload + "\n"); payload = "" }
         stdout: StdioCollector { onStreamFinished: { try { root.saveError = JSON.parse(text).error || "" } catch(e) {} } }
         onExited: function(code) {
-            if (code === 0) { root.settingsOpen = false; root.selection = ({}); root.navigation = []; root.provider = "all"; root.notice = "Settings saved"; root.refreshLive() }
+            if (code === 0) { root.settingsOpen = false; root.selection = ({}); root.navigation = []; root.provider = "all"; root.notice = "Settings saved"; root.refreshLive(false) }
             else root.notice = root.saveError || "Settings could not be saved."
         }
     }
@@ -424,7 +438,7 @@ Scope {
     Process {
         id: live
         command: Quickshell.env("AI_USAGE_DEMO") === "1" ? ["python3", helper, "report"] : ["bash", helper.replace(/collector\.py$/, "refresh.sh"), "--force"]
-        onExited: { pulseFile.reload(); root.refresh(); root.refreshPulse() }
+        onExited: { pulseFile.reload(); root.refresh(true); root.refreshPulse() }
     }
     Process {
         id: pulse
@@ -451,7 +465,9 @@ Scope {
             if (root.themePending) { root.themePending = false; root.refreshTheme() }
         }
     }
-    Timer { interval: 300000; repeat: true; running: window.visible; onTriggered: root.refresh() }
+    Timer { interval: 300000; repeat: true; running: window.visible; onTriggered: root.refresh(true) }
+    // A view scan that answers quickly swaps in without a flash of dimming.
+    Timer { interval: 250; running: root.viewLoading; onTriggered: root.viewDimmed = true }
     Timer { interval: 15000; repeat: true; running: window.visible && !root.settingsOpen; onTriggered: root.refreshPulse() }
     Timer { interval: 5000; repeat: true; running: window.visible; onTriggered: root.nowMs = Date.now() }
     Timer { interval: 5000; repeat: true; running: window.visible; onTriggered: pinFile.reload() }
@@ -514,7 +530,7 @@ Scope {
     FileView {
         path: Quickshell.env("HOME")+"/.config/omarchy/shell.toml"
         watchChanges: true; printErrors: false
-        onFileChanged: root.refresh()
+        onFileChanged: root.refresh(true)
     }
     FileView {
         path: (Quickshell.env("XDG_CONFIG_HOME") || Quickshell.env("HOME")+"/.config")+"/omarchy/shell.json"
@@ -530,7 +546,7 @@ Scope {
         function showWindow(): int {
             // Hot reload or a compositor close can leave visible true without a mapped window.
             if (!window.backingWindowVisible) window.visible = false
-            Qt.callLater(function() { window.visible = true; root.refresh() })
+            Qt.callLater(function() { window.visible = true; root.refresh(true) })
             return Quickshell.processId
         }
         function capture(path: string): void { captureRoot.grabToImage(result => result.saveToFile(path)) }
@@ -680,10 +696,10 @@ Scope {
                     Sub { width: parent.width; elide: Text.ElideRight; text: Quickshell.env("AI_USAGE_DEMO") === "1" ? "Demo data · no local history" : (root.data ? root.data.settings.enabled.map(p => root.providerName(p)).join(" · ") : "Local agent history") }
                 }
                 Item { Layout.fillWidth: true }
-                Sub { text: scan.running || live.running ? "Updating usage…" : root.liveTodayView() && !root.pulseFailed && Quickshell.env("AI_USAGE_DEMO") !== "1" ? "Today · local history live" : root.data ? (root.days === 1 ? "Today" : root.data.period.start + "  to  " + root.data.period.end) + " · scanned " + root.when(root.data.coverage.scannedAt) : "Loading…" }
+                Sub { text: root.viewLoading || live.running ? "Updating usage…" : root.liveTodayView() && !root.pulseFailed && Quickshell.env("AI_USAGE_DEMO") !== "1" ? "Today · local history live" : root.data ? (root.days === 1 ? "Today" : root.data.period.start + "  to  " + root.data.period.end) + " · scanned " + root.when(root.data.coverage.scannedAt) : "Loading…" }
                 Choice { text: root.settingsOpen ? "Cancel" : "Settings"; onClicked: root.settingsOpen ? root.settingsOpen = false : root.openSettings() }
                 Choice { visible: root.settingsOpen; text: "Save preferences"; selected: true; enabled: !save.running; onClicked: root.saveSettings() }
-                Choice { visible: !root.settingsOpen; text: "Refresh"; enabled: !scan.running && !live.running; onClicked: root.refreshLive() }
+                Choice { visible: !root.settingsOpen; text: "Refresh"; enabled: !root.viewLoading && !live.running; onClicked: root.refreshLive() }
             }
             Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: root.edge }
             Label { visible: root.notice !== ""; text: root.notice; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: root.accent }
@@ -793,8 +809,9 @@ Scope {
                 id: scroll
                 ScrollBar.vertical: QuietScrollBar { parent: scroll; x: scroll.width-width; height: scroll.height }
                 visible: !root.settingsOpen
-                enabled: !scan.running
-                opacity: scan.running && root.data ? 0.6 : 1
+                enabled: !root.viewLoading
+                opacity: root.viewDimmed && root.data ? 0.6 : 1
+                Behavior on opacity { NumberAnimation { duration: 120 } }
                 Layout.fillWidth: true; Layout.fillHeight: true
                 contentWidth: availableWidth
                 clip: true
