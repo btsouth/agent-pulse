@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Local metrics only. Source transcripts are read, never modified or copied."""
 import argparse
+import calendar
 import collections
 import datetime as dt
 import fcntl
@@ -1757,31 +1758,43 @@ def cursor_quota(force=False):
     return cached
 
 
-def account_assignments(ledger, cfg):
-    labels = {'local': cfg.get('localAccountLabel', 'Local'), 'unassigned': 'Unassigned history', 'conflict': 'Needs review'}
+def source_account(cfg):
+    """Which account a recorded source path belongs to. The deepest configured
+    folder wins; a synced machine's copy is its own account; anything else is
+    the local login."""
     roots = []
     for account in cfg.get('accounts', []):
-        labels[account['id']] = account['label']
         for directory in account['directories']:
             roots.append((directory['provider'], Path(directory['path']).expanduser().resolve(), account['id']))
     roots.sort(key=lambda item: len(item[1].parts), reverse=True)
-    cache, assignments, machines = {}, {}, set()
-    for event, provider, path in ledger.db.execute('SELECT e.id,e.provider,s.path FROM events e JOIN event_sources s ON s.event_id=e.id'):
+    cache = {}
+    def resolve(provider, path):
         key = (provider, path)
         if key not in cache:
             source = Path(path)
             match = next((aid for p, root, aid in roots if p == provider and source.is_relative_to(root)), None)
-            if match is None and str(path).startswith('machine:'):
-                match = str(path).split('/', 1)[0]
-                machines.add(match)
+            if match is None and str(path).startswith('machine:'): match = str(path).split('/', 1)[0]
             cache[key] = match or 'local'
-        assignments.setdefault(event, set()).add(cache[key])
-    for aid in sorted(machines): labels[aid] = aid.split(':', 1)[1]
-    resolved = {}
-    for event, ids in assignments.items():
-        named = ids - {'local'}
-        resolved[event] = 'conflict' if len(named) > 1 else next(iter(named)) if named else 'local'
-    return labels, resolved
+        return cache[key]
+    return resolve
+
+
+def event_account(ids):
+    """One account for an event seen under several sources. A named account
+    beats the local login; copies under two named accounts need review."""
+    named = set(ids) - {'local'}
+    return 'conflict' if len(named) > 1 else next(iter(named)) if named else 'local'
+
+
+def account_assignments(ledger, cfg):
+    labels = {'local': cfg.get('localAccountLabel', 'Local'), 'unassigned': 'Unassigned history', 'conflict': 'Needs review'}
+    for account in cfg.get('accounts', []): labels[account['id']] = account['label']
+    resolve, assignments = source_account(cfg), {}
+    for event, provider, path in ledger.db.execute('SELECT e.id,e.provider,s.path FROM events e JOIN event_sources s ON s.event_id=e.id'):
+        aid = resolve(provider, path)
+        if aid.startswith('machine:'): labels[aid] = aid.split(':', 1)[1]
+        assignments.setdefault(event, set()).add(aid)
+    return labels, {event: event_account(ids) for event, ids in assignments.items()}
 
 
 def selected(r, selection, provider):
@@ -1808,7 +1821,94 @@ def timed_event(r):
     return precision == 'event' or (precision is None and not str(r.get('client') or '').startswith('Hermes'))
 
 
-def hourly_snapshot(ledger, now=None):
+def window_start(label, reset):
+    """When a limit window began, from its label and the time it resets.
+
+    None when the label does not say how long the window runs: a count over a
+    guessed span would look as exact as a real one. A monthly window steps
+    back one calendar month, since billing months are not all 30 days.
+    """
+    text = str(label or '').lower()
+    if 'month' in text:
+        year, month = (reset.year, reset.month - 1) if reset.month > 1 else (reset.year - 1, 12)
+        return reset.replace(year=year, month=month, day=min(reset.day, calendar.monthrange(year, month)[1]))
+    if 'week' in text: return reset - dt.timedelta(days=7)
+    match = re.search(r'(\d+)\s*-?\s*(d(?:ays?)?|h(?:ours?|rs?)?|m(?:in(?:ute)?s?)?)\b', text)
+    if not match: return None
+    unit = {'d': 'days', 'h': 'hours', 'm': 'minutes'}[match.group(2)[0]]
+    return reset - dt.timedelta(**{unit: int(match.group(1))})
+
+
+def limit_window_tokens(ledger, cfg, targets, now=None):
+    """Local tokens used in each limit's current window.
+
+    targets maps a key to (providers, account, limits), where account is the
+    ledger account whose history belongs to that login. The answer maps the
+    same key to {index in limits: (window start, tokens)}. A window is left out
+    when it names no reset, has already reset, is scoped to one model (it
+    carries a title), or its length cannot be read from the label.
+    """
+    now = now or dt.datetime.now().astimezone()
+    windows, found = {}, {}
+    for key, (providers, account, limits) in targets.items():
+        for index, limit in enumerate(limits or []):
+            if not isinstance(limit, dict) or limit.get('title') or not limit.get('resetsAt'): continue
+            # Providers can send microseconds or nanoseconds; keep six digits.
+            try: reset = dt.datetime.fromisoformat(re.sub(r'(\.\d{6})\d+', r'\1', str(limit['resetsAt'])).replace('Z', '+00:00'))
+            except ValueError: continue
+            if reset.tzinfo is None: reset = reset.replace(tzinfo=dt.timezone.utc)
+            start = window_start(limit.get('label'), reset)
+            if start is None or reset <= now: continue
+            since = int(start.timestamp())
+            found.setdefault(key, {})[index] = [since, 0]
+            for provider in providers:
+                windows.setdefault((provider, account), []).append((since, found[key][index]))
+    if not windows: return {}
+    # Summed in SQL by each event's set of source paths, so accounts are
+    # resolved once per set rather than once per event: the panel's pulse
+    # runs this every 15 seconds. An event copied under several sources is
+    # placed the way account_assignments places it.
+    starts = sorted({since for entries in windows.values() for since, _ in entries})
+    names = sorted({provider for provider, _ in windows})
+    sums = ','.join('SUM(CASE WHEN ts>=? THEN tokens ELSE 0 END)' for _ in starts)
+    resolve = source_account(cfg)
+    for provider, paths, *values in ledger.db.execute(
+            f'SELECT provider,paths,{sums} FROM (SELECT e.provider,e.ts,'
+            f'e.input+e.output+e.cacheRead+e.cacheWrite AS tokens,group_concat(s.path,char(31)) AS paths '
+            f'FROM events e JOIN event_sources s ON s.event_id=e.id WHERE e.ts>=? AND e.ts<=? '
+            f'AND e.provider IN ({",".join("?" for _ in names)}) GROUP BY e.id) GROUP BY provider,paths',
+            (*starts, starts[0], now.timestamp(), *names)):
+        account = event_account(resolve(provider, path) for path in paths.split('\x1f'))
+        for since, total in windows.get((provider, account), ()):
+            total[1] += values[starts.index(since)] or 0
+    return {key: {index: tuple(value) for index, value in entries.items()} for key, entries in found.items()}
+
+
+def record_limit_targets(cfg):
+    """The ledger history behind each agent record's limits. A provider's own
+    record is the current login, whose history is the local account; any other
+    record belongs to the labelled account with its id or its name, the same
+    match the dashboard cards use to find an account's limits.
+    """
+    targets = {}
+    try: paths = sorted((STATE.parent / 'agents/usage').glob('*.json'))
+    except OSError: paths = []
+    for path in paths:
+        try: d = json.loads(path.read_text())
+        except (OSError, ValueError): continue
+        if not isinstance(d, dict) or not isinstance(d.get('limits'), list): continue
+        if path.stem in PROVIDERS:
+            targets[path.stem] = ({path.stem}, 'local', d['limits'])
+            continue
+        name = str(d.get('name') or '').casefold()
+        account = next((a for a in cfg.get('accounts', [])
+                        if a['id'] == path.stem or (name and str(a['label']).casefold() == name)), None)
+        if account:
+            targets[path.stem] = ({x['provider'] for x in account['directories']}, account['id'], d['limits'])
+    return targets
+
+
+def hourly_snapshot(ledger, now=None, cfg=None):
     """A small, local panel feed. Quota records have a different writer and
     cannot reliably carry hourly history, so the panel reads this file.
     """
@@ -1845,7 +1945,21 @@ def hourly_snapshot(ledger, now=None):
     return {'schemaVersion': 1, 'date': str(day), 'generatedAt': now.timestamp(),
             'timeZone': now.tzname() or '', 'utcOffsetMinutes': int(now.utcoffset().total_seconds() // 60),
             'tokens': total, 'timedTokens': timed, 'unplacedTokens': unplaced,
-            'availableProviders': available_providers, 'providers': providers, 'hours': hours}
+            'availableProviders': available_providers, 'providers': providers, 'hours': hours,
+            # Local tokens in each record's current limit windows, keyed by
+            # record id. The panel matches them to its limits by label and
+            # reset time, so a window that has since rolled over shows none.
+            'limitTokens': limit_tokens_by_record(ledger, cfg or DEFAULTS, now)}
+
+
+def limit_tokens_by_record(ledger, cfg, now=None):
+    targets = record_limit_targets(cfg)
+    counts = limit_window_tokens(ledger, cfg, targets, now)
+    return {key: [{'label': str(targets[key][2][index].get('label') or ''),
+                   'resetsAt': str(targets[key][2][index].get('resetsAt')),
+                   'since': since, 'tokens': tokens}
+                  for index, (since, tokens) in sorted(entries.items())]
+            for key, entries in counts.items()}
 
 
 def report(ledger, cfg, days=7, provider='all', now=None, selection=None):
@@ -2050,6 +2164,16 @@ def report(ledger, cfg, days=7, provider='all', now=None, selection=None):
                                 'shade': shade, 'shades': len(group),
                                 'quota': card_quota, 'quotaScope': scope,
                                 'valueShare': 100 * fin['value'] / summary['value'] if summary['value'] else None})
+    # Local tokens in each card's current limit windows, from the history of
+    # the account the card belongs to. They describe the whole window, so the
+    # report's own filters and period do not narrow them.
+    window_counts = limit_window_tokens(ledger, cfg, {card['id']: ({card['provider']}, card['accountId'], card['quota'].get('limits'))
+                                                      for card in cards}, today)
+    for card in cards:
+        counts = window_counts.get(card['id'])
+        if counts:
+            card['quota'] = card['quota'] | {'limits': [limit | {'tokens': counts[index][1]} if index in counts else limit
+                                                        for index, limit in enumerate(card['quota']['limits'])]}
     # Model-level allowance for Go. The quota endpoint reports only aggregate
     # windows, so value against each model's documented monthly limit is
     # estimated from local history during the current monthly reset window.
@@ -2225,7 +2349,7 @@ def main():
             cfg = cfg | {'enabled': list(dict.fromkeys(cfg['enabled'] + [p for p in PROVIDERS if p in found]))}
         if args.action == 'scan':
             ledger.scan(cfg, force=args.force)
-            atomic_json(STATE / 'hourly-summary.json', hourly_snapshot(ledger))
+            atomic_json(STATE / 'hourly-summary.json', hourly_snapshot(ledger, cfg=cfg))
             if not CONFIG.exists():
                 found = {r[0] for r in ledger.db.execute('SELECT DISTINCT provider FROM events')}
                 cfg = cfg | {'enabled': list(dict.fromkeys(cfg['enabled'] + [p for p in PROVIDERS if p in found]))}
@@ -2233,14 +2357,12 @@ def main():
             # The live counter has a local, bounded path. It never checks
             # provider limits, fetches Cursor usage, or copies a synced ledger.
             ledger.scan(cfg, local_only=True)
-            snapshot = hourly_snapshot(ledger)
+            snapshot = hourly_snapshot(ledger, cfg=cfg)
             atomic_json(STATE / 'hourly-summary.json', snapshot)
             print(json.dumps(snapshot))
         if args.action in ('go', 'scan') and os.getenv('AI_USAGE_DEMO') != '1':
             go_quota(args.force)
-            if args.action == 'go':
-                ledger.scan(cfg)
-                atomic_json(STATE / 'hourly-summary.json', hourly_snapshot(ledger))
+            if args.action == 'go': ledger.scan(cfg)
             write_agent_record(ledger, 'opencode-go')
             if args.action == 'scan' and 'grok' in cfg['enabled']:
                 grok_quota(args.force)
@@ -2263,6 +2385,9 @@ def main():
             if args.action == 'scan':
                 for p in ('gemini', 'opencode', 'pi', 'omp', 'cursor'):
                     if p in cfg['enabled']: write_agent_record(ledger, p)
+            # The records above carry fresh limits, and a window that rolled
+            # over needs its count recomputed against the new reset time.
+            atomic_json(STATE / 'hourly-summary.json', hourly_snapshot(ledger, cfg=cfg))
         if args.action == 'scan': print(json.dumps({'ok': True, 'events': ledger.db.execute('SELECT COUNT(*) FROM events').fetchone()[0]}))
         elif args.action == 'go': print(json.dumps({'ok': not bool(quota('opencode-go').get('error'))}))
         ledger.db.close()

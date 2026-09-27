@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Show the top eight models in Breakdown by default, with a row count and controls to show more or collapse the list. Switching back to Models restores the compact view.
+- Show the tokens recorded on this PC since each limit window began, next to its reset countdown in the bar panel and on the dashboard's source cards (`Resets in 1d 21h · 6.6B tokens on this PC`). Session, weekly, and monthly windows are counted from the reset time back by the window's length, and monthly windows go back one calendar month. A window with no reset time, a label that does not give its length, or a scope limited to one model shows no count. The count covers the account the limit belongs to, so a labelled second login counts only its own history. Usage on other machines or on the web is not included, and cache reads count in full even though providers weight them lower, so the count tracks volume, not the percentage.
 - Notify when a session limit, such as Claude's 5-hour window, resets after reaching 90% or more. Sessions below 90% still reset quietly, and a session that leaves the usage record or loses its reset time after resetting still counts.
 
 ## 1.8.0 - 2026-09-26

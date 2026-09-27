@@ -1138,7 +1138,16 @@ Scope {
                                             Rectangle { width: parent.width; height: 4; radius: 2; color: root.edge
                                                 Rectangle { height: 4; radius: 2; width: parent.width*Math.min(1,Math.max(0,modelData.percent)); color: modelData.percent>=0.9 ? root.colorFor("claude") : Qt.alpha(root.ink,0.55) }
                                             }
-                                            Sub { text: root.resetText(modelData.resetsAt); font.pixelSize: 10 }
+                                            Sub {
+                                                // Local tokens in this window, when the collector could
+                                                // tell where the window began.
+                                                text: {
+                                                    var reset = root.resetText(modelData.resetsAt)
+                                                    return reset.indexOf("Resets in") === 0 && typeof modelData.tokens === "number"
+                                                        ? reset + " · " + root.compact(modelData.tokens) + " tokens on this PC" : reset
+                                                }
+                                                width: parent.width; elide: Text.ElideRight; font.pixelSize: 10
+                                            }
                                         }
                                     }
                                     Column {

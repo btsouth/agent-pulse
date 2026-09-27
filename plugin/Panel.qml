@@ -294,6 +294,23 @@ Panel {
     return isFinite(date.getTime()) ? date : null
   }
 
+  // Local tokens recorded in a limit's current window, from the collector's
+  // snapshot. -1 when it has no count for this window: the label does not say
+  // how long the window runs, or the snapshot predates its latest reset.
+  function windowTokens(providerId, window) {
+    var data = usage.hourlySummary
+    var list = data && data.limitTokens ? data.limitTokens[providerId] : null
+    var reset = resetDate(window)
+    if (!list || !reset) return -1
+    for (var i = 0; i < list.length; i++) {
+      var at = resetDate({resetAt: list[i].resetsAt})
+      // Claude's reset time drifts by fractions of a second between reads.
+      if (list[i].label === window.label && at && Math.abs(at.getTime() - reset.getTime()) < 300000)
+        return Number(list[i].tokens)
+    }
+    return -1
+  }
+
   function resetDescription(window) {
     if (!window.resetAt) return "Reset time not reported"
     var date = resetDate(window)
@@ -1382,8 +1399,12 @@ Panel {
       width: parent.width
       text: {
         var remainingMs = root.resetMsFor(limitRow.window)
-        return remainingMs > 0 ? "Resets in " + root.formatDuration(remainingMs) : ""
+        if (!(remainingMs > 0)) return ""
+        var tokens = root.provider ? root.windowTokens(root.provider.providerId, limitRow.window) : -1
+        return "Resets in " + root.formatDuration(remainingMs)
+          + (tokens >= 0 ? " · " + usage.formatTokenCount(tokens) + " tokens on this PC" : "")
       }
+      elide: Text.ElideRight
       color: root.dim
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption

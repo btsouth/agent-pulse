@@ -130,6 +130,70 @@ class AccountTests(unittest.TestCase):
         self.assertEqual(cards['local']['quotaScope'], 'Current login on this PC')
         self.assertIn('current login', self.report('work')['cards'][0]['quota']['error'])
 
+    def test_window_start_reads_length_from_label(self):
+        reset = dt.datetime(2026, 3, 31, 12, tzinfo=dt.timezone.utc)
+        for label, start in [('Session (5-hour)', dt.datetime(2026, 3, 31, 7, tzinfo=dt.timezone.utc)),
+                             ('5 hours', dt.datetime(2026, 3, 31, 7, tzinfo=dt.timezone.utc)),
+                             ('5h window', dt.datetime(2026, 3, 31, 7, tzinfo=dt.timezone.utc)),
+                             ('30m window', dt.datetime(2026, 3, 31, 11, 30, tzinfo=dt.timezone.utc)),
+                             ('Weekly (7-day)', dt.datetime(2026, 3, 24, 12, tzinfo=dt.timezone.utc)),
+                             ('Weekly', dt.datetime(2026, 3, 24, 12, tzinfo=dt.timezone.utc)),
+                             # A calendar month back, clamped to February's last day.
+                             ('Monthly', dt.datetime(2026, 2, 28, 12, tzinfo=dt.timezone.utc))]:
+            self.assertEqual(c.window_start(label, reset), start, label)
+        self.assertEqual(c.window_start('Monthly', dt.datetime(2026, 1, 15, tzinfo=dt.timezone.utc)),
+                         dt.datetime(2025, 12, 15, tzinfo=dt.timezone.utc))
+        for label in ('Billing cycle', 'Auto', 'Session', ''):
+            self.assertIsNone(c.window_start(label, reset), label)
+
+    def add_at(self, key, folder, hours_ago, tokens):
+        when = (self.now - dt.timedelta(hours=hours_ago)).isoformat()
+        self.ledger.put(c.record(key, 'codex', key, when, 'gpt-4.1', '', 'CLI', input=tokens), self.root / folder / 'sessions/log.jsonl')
+
+    def test_limit_windows_count_their_own_account_since_the_window_began(self):
+        self.add_at('recent', 'local', 1, 100)
+        self.add_at('earlier', 'local', 30, 20)
+        self.add_at('old', 'local', 24 * 8, 5)
+        self.add_at('work', 'work', 1, 7000)
+        # Copied under the local login and a named account: it is the named one's.
+        self.add_at('copy', 'local', 1, 300)
+        self.add_at('copy', 'work', 1, 300)
+        reset = (self.now + dt.timedelta(hours=2)).astimezone(dt.timezone.utc)
+        limits = [{'label': 'Session (5-hour)', 'resetsAt': reset.isoformat(), 'percent': .2},
+                  {'label': 'Weekly (7-day)', 'resetsAt': reset.isoformat().replace('+00:00', 'Z'), 'percent': .4},
+                  {'label': 'Fable Weekly', 'title': 'Fable Weekly', 'resetsAt': reset.isoformat(), 'percent': 0},
+                  {'label': 'Weekly (7-day)', 'resetsAt': (self.now - dt.timedelta(hours=1)).isoformat(), 'percent': 1},
+                  {'label': 'Monthly', 'percent': .5},
+                  {'label': 'Auto', 'resetsAt': reset.isoformat(), 'percent': .5}]
+        counts = c.limit_window_tokens(self.ledger, self.cfg, {'mine': ({'codex'}, 'local', limits),
+                                                               'work': ({'codex'}, 'work', limits[:2])}, self.now)
+        self.assertEqual({index: tokens for index, (_, tokens) in counts['mine'].items()}, {0: 100, 1: 120})
+        self.assertEqual(counts['mine'][0][0], int((reset - dt.timedelta(hours=5)).timestamp()))
+        self.assertEqual({index: tokens for index, (_, tokens) in counts['work'].items()}, {0: 7300, 1: 7300})
+
+    def test_panel_snapshot_and_cards_carry_window_tokens(self):
+        self.add_at('local', 'local', 1, 100)
+        self.add_at('work', 'work', 1, 40)
+        state = self.root / 'state/ai-usage'
+        usage = state.parent / 'agents/usage'
+        usage.mkdir(parents=True)
+        reset = (self.now + dt.timedelta(days=2)).isoformat()
+        weekly = [{'label': 'Weekly (7-day)', 'percent': .3, 'resetsAt': reset}]
+        (usage / 'codex.json').write_text(json.dumps({'id': 'codex', 'name': 'Codex', 'limits': weekly}))
+        # Matched to its account by name, the way the dashboard finds its limits.
+        (usage / 'codex-work.json').write_text(json.dumps({'id': 'codex-work', 'name': 'work', 'limits': weekly}))
+        (usage / 'stranger.json').write_text(json.dumps({'id': 'stranger', 'name': 'Nobody', 'limits': weekly}))
+        with patch.object(c, 'STATE', state):
+            snapshot = c.hourly_snapshot(self.ledger, self.now, self.cfg)
+            with patch.object(c, 'quota', return_value={'limits': weekly}), patch.object(c, 'theme', return_value={}):
+                cards = {card['accountId']: card for card in c.report(self.ledger, self.cfg, now=self.now)['cards']}
+        self.assertEqual(set(snapshot['limitTokens']), {'codex', 'codex-work'})
+        self.assertEqual(snapshot['limitTokens']['codex'], [{'label': 'Weekly (7-day)', 'resetsAt': reset,
+            'since': int((self.now - dt.timedelta(days=5)).timestamp()), 'tokens': 100}])
+        self.assertEqual(snapshot['limitTokens']['codex-work'][0]['tokens'], 40)
+        self.assertEqual(cards['local']['quota']['limits'][0]['tokens'], 100)
+        self.assertNotIn('tokens', weekly[0])
+
     def test_session_averages_and_priced_share(self):
         self.add('a', 'local', 100, 'one')
         self.add('b', 'local', 300, 'one')
