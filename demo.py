@@ -13,7 +13,7 @@ import time
 
 ROOT=Path(__file__).resolve().parent
 parser=argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--view', choices=['overview', 'settings', 'accounts', 'today', 'hour', 'filters', 'sources'], default='overview')
+parser.add_argument('--view', choices=['overview', 'settings', 'accounts', 'today', 'hour', 'filters', 'sources', 'breakdown'], default='overview')
 parser.add_argument('--capture',type=Path,help='render a PNG offscreen and exit')
 parser.add_argument('--theme', choices=['dark', 'light'], default='dark', help='synthetic preview palette')
 parser.add_argument('--clock-format', choices=['12', '24'], default='12', help='synthetic Omarchy bar clock format')
@@ -105,6 +105,7 @@ with tempfile.TemporaryDirectory(prefix='usage-dashboard-demo-') as tmp:
                            ['firstHour'] if args.view == 'hour' else
                            ['filters'] if args.view == 'filters' else ['account', 'work'])
                 if args.view == 'sources': command = ['scrollTo', '750']
+                if args.view == 'breakdown': command = ['scrollTo', '1550']
                 subprocess.run(['quickshell','ipc','-p',str(ui),'--any-display','call','analytics',*command],check=True,env=env)
                 time.sleep(0.8)
             subprocess.run(['quickshell','ipc','-p',str(ui),'--any-display','call','analytics','capture',str(output)],check=True,env=env)

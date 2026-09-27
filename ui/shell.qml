@@ -63,9 +63,11 @@ Scope {
         if (!navigation.length) return
         var stack = navigation.slice(); var old = stack.pop(); navigation = stack
         selection = old.selection; provider = old.provider; breakdown = old.breakdown
-        tableLimit = 20; refresh()
+        resetTableLimit(); refresh()
     }
-    property int tableLimit: 20
+    property int tableLimit: 8
+    function breakdownPageSize() { return breakdown === "models" ? 8 : 20 }
+    function resetTableLimit() { tableLimit = breakdownPageSize() }
     property bool filtersOpen: false
     property bool providerDetailsOpen: false
     property bool providerRowsExpanded: false
@@ -75,6 +77,7 @@ Scope {
         var keep = Object.assign({}, selection)
         delete keep.day; delete keep.hourStart
         selection = keep
+        resetTableLimit()
         refresh()
     }
     function filterBy(field, name, providerId) {
@@ -86,7 +89,7 @@ Scope {
         if (field === "day") delete next.hourStart
         selection = next
         if (providerId) provider = providerId
-        tableLimit = 20; refresh()
+        resetTableLimit(); refresh()
     }
     function drill(field, name, providerId) {
         // Opening a row also narrows the page, then shows the sessions behind it.
@@ -98,7 +101,7 @@ Scope {
         navigation = navigation.concat([{selection:selection,provider:provider,breakdown:breakdown}])
         selection = Object.assign({}, selection, {day: Qt.formatDate(new Date(start*1000), "yyyy-MM-dd"), hourStart: Number(start)})
         breakdown = "sessions"
-        tableLimit = 20
+        resetTableLimit()
         refresh()
     }
     function modelChips(options, selectedName) {
@@ -111,7 +114,7 @@ Scope {
         }
         return top
     }
-    function clearSelection() { navigation = []; selection = ({}); tableLimit = 20; refresh() }
+    function clearSelection() { navigation = []; selection = ({}); resetTableLimit(); refresh() }
     function chooseSource(id) {
         var next = Object.assign({}, selection)
         var excluded = (next.excludeSource || []).filter(source => source !== id)
@@ -119,7 +122,7 @@ Scope {
         else next.excludeSource = excluded
         selection = next
         provider = id
-        tableLimit = 20
+        resetTableLimit()
         refresh()
     }
     function isExcluded(id) { return (selection.excludeSource || []).indexOf(id) >= 0 }
@@ -135,7 +138,7 @@ Scope {
         if (list.length) next.excludeSource = list; else delete next.excludeSource
         selection = next
         if (at < 0 && provider === id) provider = "all"
-        tableLimit = 20; refresh()
+        resetTableLimit(); refresh()
     }
     function filterText() {
         return Object.keys(selection).map(function(k) {
@@ -147,6 +150,8 @@ Scope {
     }
     function when(ts) { return ts ? Qt.formatDateTime(new Date(ts*1000), "MMM d, yyyy " + shortTimePattern) : "No recorded activity" }
     property string breakdown: "models"
+    readonly property var breakdownItems: data ? (data[breakdown] || []) : []
+    onBreakdownChanged: resetTableLimit()
     property bool settingsOpen: false
     property string settingsTab: "sources"
     property string error: ""
@@ -1229,7 +1234,7 @@ Scope {
                                 Label { text: "Breakdown"; font.pixelSize: 16; font.weight: Font.DemiBold }
                                 Item { Layout.fillWidth: true }
                                 Repeater { model: ["models","projects","clients","routes","accounts","sessions"]
-                                    Choice { required property string modelData; text: modelData[0].toUpperCase()+modelData.slice(1); selected: root.breakdown===modelData; onClicked: { root.breakdown=modelData; root.tableLimit=20 } }
+                                    Choice { required property string modelData; text: modelData[0].toUpperCase()+modelData.slice(1); selected: root.breakdown===modelData; onClicked: root.breakdown=modelData }
                                 }
                             }
                             RowLayout { width: parent.width
@@ -1239,7 +1244,7 @@ Scope {
                                 Sub { text: "CACHE READ"; Layout.preferredWidth: 95; horizontalAlignment: Text.AlignRight }
                             }
                             Repeater {
-                                model: root.data ? (root.data[root.breakdown] || []).slice(0,root.tableLimit) : []
+                                model: root.breakdownItems.slice(0, root.tableLimit)
                                 Rectangle {
                                     required property var modelData
                                     width: tableColumn.width; height: root.breakdown === "sessions" ? 62 : 43; color: rowHover.hovered ? Qt.alpha(root.ink,0.04) : "transparent"
@@ -1281,9 +1286,15 @@ Scope {
                                     }
                                 }
                             }
-                            Choice { visible: !!root.data && (root.data[root.breakdown] || []).length > root.tableLimit; text: "Show 20 more"; onClicked: root.tableLimit += 20 }
+                            RowLayout {
+                                width: parent.width
+                                visible: root.breakdownItems.length > root.breakdownPageSize()
+                                Sub { text: "Showing " + Math.min(root.tableLimit, root.breakdownItems.length) + " of " + root.breakdownItems.length; Layout.fillWidth: true }
+                                Choice { visible: root.tableLimit > root.breakdownPageSize(); text: "Show fewer"; onClicked: root.resetTableLimit() }
+                                Choice { visible: root.breakdownItems.length > root.tableLimit; text: "Show " + Math.min(root.breakdownPageSize(), root.breakdownItems.length - root.tableLimit) + " more"; onClicked: root.tableLimit += root.breakdownPageSize() }
+                            }
                             Sub { width: parent.width; wrapMode: Text.WordWrap; text: "A recorded session is not a completed task. Averages cover this period; priced value excludes unknown prices." }
-                            Sub { visible: !!root.data && !(root.data[root.breakdown] || []).length; text: "No recorded activity in this period." }
+                            Sub { visible: !!root.data && !root.breakdownItems.length; text: "No recorded activity in this period." }
                         }
                     }
                     Card {

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Show the top eight models in Breakdown by default, with a row count and controls to show more or collapse the list. Switching back to Models restores the compact view.
 - Notify when a session limit, such as Claude's 5-hour window, resets after reaching 90% or more. Sessions below 90% still reset quietly, and a session that leaves the usage record or loses its reset time after resetting still counts.
 
 ## 1.8.0 - 2026-09-26
