@@ -2164,6 +2164,9 @@ def report(ledger, cfg, days=7, provider='all', now=None, selection=None):
                                 'shade': shade, 'shades': len(group),
                                 'quota': card_quota, 'quotaScope': scope,
                                 'valueShare': 100 * fin['value'] / summary['value'] if summary['value'] else None})
+    # Heaviest users of the period first. Shades were already assigned within
+    # each provider, so reordering keeps every account's colour.
+    cards.sort(key=lambda card: card['tokens'], reverse=True)
     # Local tokens in each card's current limit windows, from the history of
     # the account the card belongs to. They describe the whole window, so the
     # report's own filters and period do not narrow them.

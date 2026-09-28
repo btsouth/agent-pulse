@@ -1425,6 +1425,17 @@ class CollectorTests(unittest.TestCase):
         self.assertGreater(card['models'][0]['value'], 0)
         ledger.db.close()
 
+    def test_cards_are_ordered_by_tokens_across_providers(self):
+        ledger = c.Ledger(self.root / 'order.sqlite')
+        self.addCleanup(ledger.db.close)
+        for provider, tokens in (('ollama-cloud', 10), ('opencode-go', 500), ('codex', 2000)):
+            ledger.put(c.record(provider, provider, 's', 1789000000, 'glm-5.2', '/p', 'Hermes', input=tokens))
+        with patch.object(c, 'quota', return_value={'limits': []}), patch.object(c, 'account_quotas', return_value=({}, {})), \
+             patch.object(c, 'theme', return_value={}):
+            data = c.report(ledger, c.DEFAULTS | {'enabled': ['ollama-cloud', 'opencode-go', 'codex']}, days=365,
+                            now=dt.datetime(2026, 9, 16, 12).astimezone())
+        self.assertEqual([card['provider'] for card in data['cards']], ['codex', 'opencode-go', 'ollama-cloud'])
+
     def model_family_ledger(self):
         """One model recorded the way four routes each name it, plus a second
         model that must stay its own row."""
