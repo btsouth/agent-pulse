@@ -194,6 +194,44 @@ class AccountTests(unittest.TestCase):
         self.assertEqual(cards['local']['quota']['limits'][0]['tokens'], 100)
         self.assertNotIn('tokens', weekly[0])
 
+    def test_hourly_snapshot_splits_each_record_by_account(self):
+        self.add_at('local', 'local', 1, 50)
+        self.add_at('work', 'work', 1, 100)
+        self.add_at('personal', 'personal', 2, 300)
+        self.add_at('copy', 'local', 1, 7)
+        self.add_at('copy', 'work', 1, 7)
+        # A second Personal login that has never produced history, and a
+        # record for a login that is not configured here at all.
+        self.cfg['accounts'].append({'id': 'idle', 'label': 'Idle', 'directories': [{'provider': 'codex', 'path': str(self.root / 'idle')}]})
+        state = self.root / 'state/ai-usage'
+        usage = state.parent / 'agents/usage'
+        usage.mkdir(parents=True)
+        for name in ('codex', 'work', 'idle'):
+            (usage / f'{name}.json').write_text(json.dumps({'id': name, 'name': name.title(), 'limits': []}))
+        (usage / 'personal.json').write_text(json.dumps({'id': 'personal', 'name': 'Personal'}))
+        (usage / 'stranger.json').write_text(json.dumps({'id': 'stranger', 'name': 'Nobody'}))
+        with patch.object(c, 'STATE', state):
+            snapshot = c.hourly_snapshot(self.ledger, self.now, self.cfg)
+        totals = {key: entry['tokens'] for key, entry in snapshot['sources'].items()}
+        # The provider holds every login; each record holds only its own.
+        self.assertEqual(snapshot['providers']['codex']['tokens'], 457)
+        self.assertEqual(totals, {'codex': 50, 'work': 107, 'personal': 300, 'idle': 0})
+        hours = {h['label']: h for h in snapshot['hours']}
+        self.assertEqual(hours['16:00']['sources'], {'personal': 300})
+        self.assertEqual(hours['17:00']['sources'], {'codex': 50, 'work': 107})
+        # A login with no history reads as unknown to the ledger; one that has
+        # only been idle today does not.
+        self.assertEqual(snapshot['availableSources'], ['codex', 'personal', 'work'])
+        self.assertIn('codex', snapshot['availableProviders'])
+
+    def test_hourly_snapshot_keeps_plain_provider_ids_without_records(self):
+        self.add('a', 'local', 40)
+        with patch.object(c, 'STATE', self.root / 'state/ai-usage'):
+            snapshot = c.hourly_snapshot(self.ledger, self.now, self.cfg)
+        self.assertEqual(snapshot['sources'], {})
+        self.assertEqual(snapshot['availableSources'], ['codex'])
+        self.assertEqual(snapshot['providers']['codex']['tokens'], 40)
+
     def test_session_averages_and_priced_share(self):
         self.add('a', 'local', 100, 'one')
         self.add('b', 'local', 300, 'one')

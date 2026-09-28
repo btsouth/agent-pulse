@@ -1884,11 +1884,12 @@ def limit_window_tokens(ledger, cfg, targets, now=None):
     return {key: {index: tuple(value) for index, value in entries.items()} for key, entries in found.items()}
 
 
-def record_limit_targets(cfg):
-    """The ledger history behind each agent record's limits. A provider's own
-    record is the current login, whose history is the local account; any other
-    record belongs to the labelled account with its id or its name, the same
-    match the dashboard cards use to find an account's limits.
+def record_targets(cfg):
+    """The ledger history behind each agent record. A provider's own record is
+    the current login, whose history is the local account; any other record
+    belongs to the labelled account with its id or its name, the same match the
+    dashboard cards use to find an account's limits. Maps a record id to
+    (providers, account, limits); limits is empty for a record that lists none.
     """
     targets = {}
     try: paths = sorted((STATE.parent / 'agents/usage').glob('*.json'))
@@ -1896,60 +1897,119 @@ def record_limit_targets(cfg):
     for path in paths:
         try: d = json.loads(path.read_text())
         except (OSError, ValueError): continue
-        if not isinstance(d, dict) or not isinstance(d.get('limits'), list): continue
+        if not isinstance(d, dict): continue
+        limits = d['limits'] if isinstance(d.get('limits'), list) else []
         if path.stem in PROVIDERS:
-            targets[path.stem] = ({path.stem}, 'local', d['limits'])
+            targets[path.stem] = ({path.stem}, 'local', limits)
             continue
         name = str(d.get('name') or '').casefold()
         account = next((a for a in cfg.get('accounts', [])
                         if a['id'] == path.stem or (name and str(a['label']).casefold() == name)), None)
         if account:
-            targets[path.stem] = ({x['provider'] for x in account['directories']}, account['id'], d['limits'])
+            targets[path.stem] = ({x['provider'] for x in account['directories']}, account['id'], limits)
     return targets
+
+
+def record_limit_targets(cfg):
+    """record_targets for the records that carry limits."""
+    return {key: target for key, target in record_targets(cfg).items() if target[2]}
+
+
+def source_history(ledger, cfg, targets, providers, active=()):
+    """Which agent records have indexed history at any time. A labelled
+    account's history is told apart by its source paths, which is one cheap
+    pass over the distinct paths rather than over every event, and only for an
+    account with nothing today (active). A provider's own record is available
+    whenever the provider has any history, and a provider with no record of its
+    own keeps its plain id.
+    """
+    named = {key: (provs, account) for key, (provs, account, _) in targets.items() if account != 'local'}
+    found = {key for key, (provs, _, _) in targets.items() if key not in named and provs & set(providers)} | set(active)
+    named = {key: target for key, target in named.items() if key not in found}
+    if named:
+        resolve = source_account(cfg)
+        paths = [row[0] for row in ledger.db.execute('SELECT DISTINCT path FROM event_sources')]
+        found |= {key for key, (provs, account) in named.items()
+                  if any(resolve(provider, path) == account for provider in provs for path in paths)}
+    return sorted(found | {p for p in providers if p not in targets})
 
 
 def hourly_snapshot(ledger, now=None, cfg=None):
     """A small, local panel feed. Quota records have a different writer and
     cannot reliably carry hourly history, so the panel reads this file.
+
+    Totals are kept per provider and per agent record. A labelled second login
+    is its own record in the panel but shares its provider's table with the
+    main login, so the record totals split each provider by account.
     """
+    cfg = cfg or DEFAULTS
     now = now or dt.datetime.now().astimezone()
     day = now.date()
     start = int(dt.datetime.combine(day, dt.time()).timestamp())
     end = int(now.timestamp())
     hours = [{'start': ts, 'label': dt.datetime.fromtimestamp(ts).strftime('%H:%M'),
               'zone': dt.datetime.fromtimestamp(ts).astimezone().strftime('%Z'),
-              'tokens': 0, 'providers': {}}
+              'tokens': 0, 'providers': {}, 'sources': {}}
              for ts in range(start, end + 1, 3600)]
     providers = {}
     available_providers = [row[0] for row in ledger.db.execute('SELECT DISTINCT provider FROM events')]
+    targets = record_targets(cfg)
+    # Every record has an entry, so an idle login reads as zero rather than
+    # as a source the snapshot knows nothing about.
+    sources = {key: {'tokens': 0, 'timedTokens': 0, 'unplacedTokens': 0} for key in targets}
+    records = {}
+    for key, (provs, account, _) in targets.items():
+        for provider in provs: records.setdefault((provider, account), []).append(key)
+    resolve, accounts = source_account(cfg), {}
     total = timed = unplaced = 0
     ledger.db.row_factory = sqlite3.Row
-    for row in ledger.db.execute('SELECT provider,client,timePrecision,ts,input,output,cacheRead,cacheWrite '
-                                 'FROM events WHERE ts>=? AND ts<=?', (start, end)):
+    for row in ledger.db.execute('SELECT e.provider,e.client,e.timePrecision,e.ts,e.input,e.output,e.cacheRead,e.cacheWrite,'
+                                 'group_concat(s.path,char(31)) AS paths '
+                                 'FROM events e INDEXED BY events_time LEFT JOIN event_sources s ON s.event_id=e.id '
+                                 'WHERE e.ts>=? AND e.ts<=? GROUP BY e.id', (start, end)):
         r = dict(row)
         tokens = sum(number(r[f]) for f in FIELDS[:4])
+        # The same account an event gets everywhere else; one without a
+        # recorded source is unassigned history. The time index is named
+        # because grouping by id otherwise walks every event in the ledger.
+        origin = (r['provider'], r['paths'])
+        if origin not in accounts:
+            accounts[origin] = event_account(resolve(r['provider'], path) for path in r['paths'].split('\x1f')) if r['paths'] else 'unassigned'
+        owners = records.get((r['provider'], accounts[origin]), ())
         p = providers.setdefault(r['provider'], {'tokens': 0, 'timedTokens': 0, 'unplacedTokens': 0})
+        mine = [sources[o] for o in owners]
         total += tokens
         p['tokens'] += tokens
+        for m in mine: m['tokens'] += tokens
         if not timed_event(r):
             unplaced += tokens
             p['unplacedTokens'] += tokens
+            for m in mine: m['unplacedTokens'] += tokens
             continue
         index = int((r['ts'] - start) // 3600)
         if 0 <= index < len(hours):
             timed += tokens
             p['timedTokens'] += tokens
+            for m in mine: m['timedTokens'] += tokens
             hours[index]['tokens'] += tokens
             by_provider = hours[index]['providers']
             by_provider[r['provider']] = by_provider.get(r['provider'], 0) + tokens
+            by_source = hours[index]['sources']
+            for o in owners: by_source[o] = by_source.get(o, 0) + tokens
     return {'schemaVersion': 1, 'date': str(day), 'generatedAt': now.timestamp(),
             'timeZone': now.tzname() or '', 'utcOffsetMinutes': int(now.utcoffset().total_seconds() // 60),
             'tokens': total, 'timedTokens': timed, 'unplacedTokens': unplaced,
             'availableProviders': available_providers, 'providers': providers, 'hours': hours,
+            # The same totals for each agent record, so a second login shows
+            # its own usage instead of its provider's, and the records with
+            # indexed history at any time.
+            'sources': sources,
+            'availableSources': source_history(ledger, cfg, targets, available_providers,
+                                               [key for key, entry in sources.items() if entry['tokens']]),
             # Local tokens in each record's current limit windows, keyed by
             # record id. The panel matches them to its limits by label and
             # reset time, so a window that has since rolled over shows none.
-            'limitTokens': limit_tokens_by_record(ledger, cfg or DEFAULTS, now)}
+            'limitTokens': limit_tokens_by_record(ledger, cfg, now)}
 
 
 def limit_tokens_by_record(ledger, cfg, now=None):
