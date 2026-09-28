@@ -245,10 +245,15 @@ Panel {
   function allLimitRows() {
     var rows = []
     for (var i = 0; i < providers.length; i++) {
-      var window = bindingWindow(providers[i])
-      if (window && !isPinned(providers[i].providerId, window.label, window.title)) rows.push({id: providers[i].providerId, name: providers[i].providerName,
-                             label: window.label, title: window.title, percent: window.percent,
-                             resetAt: window.resetAt, stale: providers[i].limitsStale === true})
+      var windows = limitWindows(providers[i])
+      for (var j = 0; j < windows.length; j++) {
+        var window = windows[j]
+        if (resetDate(window) && resetMsFor(window) <= 0) continue
+        if (isPinned(providers[i].providerId, window.label, window.title)) continue
+        rows.push({id: providers[i].providerId, name: providers[i].providerName,
+                   label: window.label, title: window.title, percent: window.percent,
+                   resetAt: window.resetAt, stale: providers[i].limitsStale === true})
+      }
     }
     rows.sort(function(a, b) {
       if (a.stale !== b.stale) return a.stale ? 1 : -1

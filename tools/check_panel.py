@@ -84,6 +84,7 @@ ShellRoot {
       return JSON.stringify(panel.models.map(row => ({name: row.name, total: row.total,
         details: panel.modelTooltip(row)})))
     }
+    function watchLimits(): string { return JSON.stringify(panel.allLimitRows()) }
     function source(): string { return JSON.stringify(panel.qaSourcePicker()) }
     function header(): string { return JSON.stringify(panel.qaHeader()) }
     function selectCodex(): void { panel.selectedProviderId = "codex" }
@@ -111,12 +112,19 @@ ShellRoot {
     }))
     (usage / 'claude.json').write_text(json.dumps({
         'id': 'claude', 'name': 'Claude', 'activeDays': 1,
-        'limits': [{'label': 'Weekly (7-day)', 'percent': 0.58, 'resetsAt': reset_at}],
+        'limits': [
+            {'label': 'Session', 'title': 'Session', 'percent': 1, 'resetsAt': reset_at},
+            {'label': 'Weekly (7-day)', 'title': 'Weekly', 'percent': 0.97, 'resetsAt': reset_at},
+            {'label': 'Model weekly', 'title': 'Weekly', 'percent': 0.98, 'resetsAt': reset_at},
+            {'label': 'Monthly', 'title': 'Monthly', 'percent': 0.59},
+            {'label': 'Expired', 'percent': 1, 'resetsAt': '2020-01-01T00:00:00Z'},
+        ],
         'modelUsage': {'claude-sonnet-4': {'inputTokens': 20}},
     }))
     pins = root / 'config/omarchy/ai-usage/pinned-limit.json'
     pins.parent.mkdir(parents=True)
-    pins.write_text(json.dumps({'pins': [{'provider': 'codex', 'label': 'Weekly (7-day)', 'title': 'Weekly'}]}))
+    pins.write_text(json.dumps({'pins': [{'provider': 'codex', 'label': 'Weekly (7-day)', 'title': 'Weekly'},
+        {'provider': 'claude', 'label': 'Session', 'title': 'Session'}]}))
     theme = root / '.local/state/omarchy/current/theme/colors.toml'
     theme.parent.mkdir(parents=True)
     theme.write_text('background = "#151b18"\nforeground = "#e8e6da"\naccent = "#7aaf92"\n'
@@ -154,6 +162,9 @@ ShellRoot {
                                    'call', 'panelqa', method, *arguments], env=env,
                                   capture_output=True, text=True, check=True)
             return call.stdout.strip()
+        watched = json.loads(ipc('watchLimits'))
+        assert [row['percent'] for row in watched] == [0.98, 0.97, 0.59], watched
+        assert [row['label'] for row in watched] == ['Model weekly', 'Weekly (7-day)', 'Monthly'], watched
         source = json.loads(ipc('source'))
         assert source == {'label': 'SOURCE', 'value': 'all', 'text': 'All sources'}, source
         header = json.loads(ipc('header'))
