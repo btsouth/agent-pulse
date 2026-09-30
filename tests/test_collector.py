@@ -1394,6 +1394,98 @@ class CollectorTests(unittest.TestCase):
             return io.BytesIO(json.dumps(payload).encode())
         return fake
 
+    def credential_quota_response(self, request, timeout=12):
+        payloads = {
+            'https://ollama.com/api/usage': {'limits': {'weekly': {'usage': .2}}},
+            'https://api.commandcode.ai/alpha/billing/credits': {
+                'windowLimits': {'weekly': {'used': 2, 'cap': 10}}},
+            'https://api.commandcode.ai/alpha/billing/subscriptions': {'data': {}},
+            'https://api.commandcode.ai/alpha/usage/summary': {},
+            'https://api.cline.bot/api/v1/users/me/plan/usage-limits': {
+                'limits': [{'type': 'weekly', 'percentUsed': 20}]},
+            'https://api.cline.bot/api/v1/users/me/plan': {'plan': {}}}
+        return io.BytesIO(json.dumps(payloads[request.full_url]).encode())
+
+    def test_quota_fingerprints_keep_cache_hits_and_detect_changed_or_removed_keys(self):
+        for provider in ('ollama', 'commandcode', 'clinepass'):
+            with self.subTest(provider=provider), \
+                 patch.object(c, provider + '_key', return_value='fixture-secret-one') as key, \
+                 patch.object(c.urllib.request, 'urlopen', side_effect=self.credential_quota_response) as network:
+                quota = getattr(c, provider + '_quota')
+                first = quota()
+                self.assertEqual(first['error'], '')
+                self.assertNotIn('fixture-secret-one', json.dumps(first))
+                fingerprint = first['keyVersion']['key']
+                self.assertEqual(len(bytes.fromhex(fingerprint['salt'])), 16)
+                self.assertEqual(len(bytes.fromhex(fingerprint['digest'])), 32)
+                calls = network.call_count
+                self.assertEqual(quota(), first)
+                self.assertEqual(network.call_count, calls)
+                key.return_value = 'fixture-secret-two'
+                changed = quota()
+                self.assertNotIn('fixture-secret-two', json.dumps(changed))
+                self.assertGreater(network.call_count, calls)
+                self.assertNotEqual(changed['keyVersion'], first['keyVersion'])
+                calls = network.call_count
+                quota(force=True)
+                self.assertGreater(network.call_count, calls)
+                key.return_value = ''
+                calls = network.call_count
+                removed = quota()
+                self.assertIsNone(removed['keyVersion']['key'])
+                self.assertTrue(removed['error'])
+                self.assertEqual(network.call_count, calls)
+                raw = (c.STATE / (provider + '-quota.json')).read_text()
+                self.assertNotIn('fixture-secret-one', raw)
+                self.assertNotIn('fixture-secret-two', raw)
+
+    def test_quota_legacy_fingerprints_migrate_once_despite_recent_attempt(self):
+        for provider in ('ollama', 'commandcode', 'clinepass'):
+            with self.subTest(provider=provider), \
+                 patch.object(c, provider + '_key', return_value='fixture-secret'), \
+                 patch.object(c.urllib.request, 'urlopen', side_effect=self.credential_quota_response) as network:
+                path = c.STATE / (provider + '-quota.json')
+                c.atomic_json(path, {'attemptedAt': time.time(),
+                                     'keyVersion': {'file': None, 'key': '0123456789abcdef'}})
+                quota = getattr(c, provider + '_quota')
+                migrated = quota()
+                self.assertEqual(migrated['error'], '')
+                self.assertGreater(network.call_count, 0)
+                calls = network.call_count
+                self.assertEqual(quota(), migrated)
+                self.assertEqual(network.call_count, calls)
+                self.assertEqual(json.loads(path.read_text())['keyVersion'], migrated['keyVersion'])
+
+    def test_quota_fingerprints_use_independent_salts_and_fixed_work_factor(self):
+        with patch.object(c.hashlib, 'pbkdf2_hmac', wraps=c.hashlib.pbkdf2_hmac) as derive:
+            one = c.quota_key_version('fixture-secret', self.root / 'one.key', {})
+            two = c.quota_key_version('fixture-secret', self.root / 'two.key', {})
+        self.assertNotEqual(one['key']['salt'], two['key']['salt'])
+        self.assertNotEqual(one['key']['digest'], two['key']['digest'])
+        self.assertTrue(all(call.args[3] >= 600_000 for call in derive.call_args_list))
+
+    def test_quota_invalid_salts_refresh_without_accepting_cache_work_factor(self):
+        for salt in (None, 'z' * 32, '00', ['00' * 16]):
+            with self.subTest(salt=salt), \
+                 patch.object(c, 'ollama_key', return_value='fixture-secret'), \
+                 patch.object(c.urllib.request, 'urlopen', side_effect=self.credential_quota_response) as network:
+                c.atomic_json(c.STATE / 'ollama-quota.json', {
+                    'attemptedAt': time.time(), 'keyVersion': {'file': None, 'key': {
+                        'scheme': 'pbkdf2-sha256-v1', 'salt': salt, 'digest': 'old', 'iterations': 1}}})
+                result = c.ollama_quota()
+                self.assertEqual(result['error'], '')
+                self.assertEqual(network.call_count, 1)
+                self.assertEqual(len(bytes.fromhex(result['keyVersion']['key']['salt'])), 16)
+
+    def test_quota_key_file_change_invalidates_the_cache(self):
+        path = self.root / 'fixture.key'
+        path.write_text('fixture-secret')
+        one = c.quota_key_version('fixture-secret', path, {})
+        os.utime(path, ns=(path.stat().st_atime_ns, path.stat().st_mtime_ns + 1_000_000))
+        two = c.quota_key_version('fixture-secret', path, {'keyVersion': one})
+        self.assertNotEqual(one, two)
+        self.assertEqual(one['key'], two['key'])
+
     def test_ollama_quota_maps_whatever_windows_the_plan_reports(self):
         payload = {'limits': {'session': {'usage': 0.046, 'models': [{'name': 'glm-5.2', 'request_count': 34}]},
                               'weekly': {'usage': 0.051, 'models': [{'name': 'glm-5.2', 'request_count': 254}]}}}

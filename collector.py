@@ -1466,22 +1466,43 @@ def ollama_key(cfg=None):
     return ''
 
 
+def quota_key_version(key, key_file, cached):
+    """Detect credential changes without persisting a fast hash of the key.
+
+    A random salt belongs to each provider's cache and is reused so unchanged
+    credentials still hit the throttle. Legacy fingerprints refresh once.
+    Parameters are fixed here, never taken from an editable cache file.
+    """
+    try:
+        stat = key_file.stat()
+        file_version = [stat.st_mtime_ns, stat.st_size]
+    except OSError: file_version = None
+    fingerprint = None
+    if key:
+        version = cached.get('keyVersion')
+        previous = version.get('key') if isinstance(version, dict) else None
+        salt = None
+        if isinstance(previous, dict) and previous.get('scheme') == 'pbkdf2-sha256-v1':
+            encoded = previous.get('salt')
+            if isinstance(encoded, str) and len(encoded) == 32:
+                try: salt = bytes.fromhex(encoded)
+                except ValueError: pass
+        if salt is None or len(salt) != 16: salt = os.urandom(16)
+        fingerprint = {'scheme': 'pbkdf2-sha256-v1', 'salt': salt.hex(),
+                       'digest': hashlib.pbkdf2_hmac('sha256', key.encode(), salt, 600_000, dklen=32).hex()}
+    return {'file': file_version, 'key': fingerprint}
+
+
 def ollama_quota(force=False):
     path = STATE / 'ollama-quota.json'
     key = ollama_key()
     key_file = config_dir() / 'ollama.key'
-    try:
-        stat = key_file.stat()
-        key_version = [stat.st_mtime_ns, stat.st_size]
-    except OSError: key_version = None
     # Throttle on the credential itself, not on one of the files that may hold
     # it: switching accounts in Settings or OLLAMA_API_KEY would otherwise show
-    # the previous account's usage until the cache expired. Only a digest is
-    # ever stored.
-    key_version = {'file': key_version,
-                   'key': hashlib.sha256(key.encode()).hexdigest()[:16] if key else None}
+    # the previous account's usage until the cache expired.
     try: cached = json.loads(path.read_text())
     except (OSError, ValueError): cached = {}
+    key_version = quota_key_version(key, key_file, cached)
     if not force and cached.get('keyVersion') == key_version and time.time() - cached.get('attemptedAt', 0) < 300: return cached
     try:
         if not key: raise QuotaUnavailable('Add an Ollama Cloud API key in Settings to read its usage.')
@@ -1559,14 +1580,9 @@ def commandcode_quota(force=False):
     path = STATE / 'commandcode-quota.json'
     key = commandcode_key()
     key_file = config_dir() / 'commandcode.key'
-    try:
-        stat = key_file.stat()
-        key_version = [stat.st_mtime_ns, stat.st_size]
-    except OSError: key_version = None
-    key_version = {'file': key_version,
-                   'key': hashlib.sha256(key.encode()).hexdigest()[:16] if key else None}
     try: cached = json.loads(path.read_text())
     except (OSError, ValueError): cached = {}
+    key_version = quota_key_version(key, key_file, cached)
     if not force and cached.get('keyVersion') == key_version and time.time() - cached.get('attemptedAt', 0) < 300: return cached
     try:
         if not key: raise QuotaUnavailable('Add a CommandCode API key in Settings to read its usage.')
@@ -1705,14 +1721,9 @@ def clinepass_quota(force=False):
     path = STATE / 'clinepass-quota.json'
     key = clinepass_key()
     key_file = config_dir() / 'clinepass.key'
-    try:
-        stat = key_file.stat()
-        key_version = [stat.st_mtime_ns, stat.st_size]
-    except OSError: key_version = None
-    key_version = {'file': key_version,
-                   'key': hashlib.sha256(key.encode()).hexdigest()[:16] if key else None}
     try: cached = json.loads(path.read_text())
     except (OSError, ValueError): cached = {}
+    key_version = quota_key_version(key, key_file, cached)
     if not force and cached.get('keyVersion') == key_version and time.time() - cached.get('attemptedAt', 0) < 300: return cached
     try:
         if not key: raise QuotaUnavailable('Add a ClinePass API key in Settings to read its usage.')

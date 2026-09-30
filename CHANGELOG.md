@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Replace the fast API-key fingerprints in Ollama Cloud, CommandCode, and ClinePass quota caches with salted PBKDF2 fingerprints. Existing caches refresh once after upgrading; key changes still refresh immediately.
 ## 1.8.1 - 2026-09-29
 
 - Price Codex GPT-6.1 Sol using OpenAI's published rates, including cached input, cache writes, and the long-context tier above 272K input tokens.
