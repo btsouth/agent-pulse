@@ -1,13 +1,24 @@
 {
   "source": "OpenAI API pricing and OpenCode model catalog (models.dev)",
   "url": "https://developers.openai.com/api/docs/pricing",
-  "verifiedAt": "2026-09-23",
+  "verifiedAt": "2026-09-29",
   "notes": [
     "gpt-5.3-codex-spark rates are the published openai entry in the catalog OpenCode uses ($1.75 input, $14 output, $0.175 cached input per million tokens).",
     "codex-auto-review has no published rate anywhere; it is marked internal so its tokens are excluded from the unpriced warning without inventing a price.",
-    "GPT-6 Sol and Luna use OpenAI's published Standard rates, including the full-request long-context tier above 272K input tokens."
+    "GPT-6 Sol and Luna use OpenAI's published Standard rates, including the full-request long-context tier above 272K input tokens.",
+    "GPT-6.1 Sol rates were verified against https://developers.openai.com/api/docs/models/gpt-6.1-sol on 2026-09-29: $2 input, $0.10 cached input, $2.50 cache writes, and $10 output per million tokens. Above 272K input tokens, input and cache rates double and output is 1.5x for the full request."
   ],
   "models": {
+    "codex/gpt-6.1-sol": {
+      "input_cost_per_token": 0.000002,
+      "output_cost_per_token": 0.00001,
+      "cache_read_input_token_cost": 0.0000001,
+      "cache_creation_input_token_cost": 0.0000025,
+      "input_cost_per_token_above_272k_tokens": 0.000004,
+      "output_cost_per_token_above_272k_tokens": 0.000015,
+      "cache_read_input_token_cost_above_272k_tokens": 0.0000002,
+      "cache_creation_input_token_cost_above_272k_tokens": 0.000005
+    },
     "codex/gpt-6-sol": {
       "input_cost_per_token": 0.000002,
       "output_cost_per_token": 0.00001,

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Price Codex GPT-6.1 Sol using OpenAI's published rates, including cached input, cache writes, and the long-context tier above 272K input tokens.
 - Fix the bar panel saying "No indexed token history for this source" for labelled second logins such as Claude Second, Claude Third, and ChatGPT Second. Their history was indexed all along, but the hourly snapshot only knew providers. It now keeps totals for each source in the panel, so those sources show their own hours and tokens today, and Main no longer includes its second logins' usage. All sources still counts every login once.
 - Rewrite the panel's message for a source with no indexed history. It now says why: the source keeps no local logs, or it has not been indexed yet and its history folder can be added in Settings. It shows the token count from the source's own usage record when there is one. A source with history but nothing today reads "No tokens processed today", and All sources names the sources without hourly history instead of counting them.
 - Show the top eight models in Breakdown by default, with a row count and controls to show more or collapse the list. Switching back to Models restores the compact view.
