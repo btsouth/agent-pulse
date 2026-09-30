@@ -13,11 +13,12 @@ import time
 
 ROOT=Path(__file__).resolve().parent
 parser=argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--view', choices=['overview', 'settings', 'accounts', 'today', 'hour', 'filters', 'sources', 'breakdown'], default='overview')
+parser.add_argument('--view', choices=['overview', 'settings', 'accounts', 'account', 'reset', 'today', 'hour', 'filters', 'sources', 'breakdown'], default='overview')
 parser.add_argument('--capture',type=Path,help='render a PNG offscreen and exit')
 parser.add_argument('--theme', choices=['dark', 'light'], default='dark', help='synthetic preview palette')
 parser.add_argument('--clock-format', choices=['12', '24'], default='12', help='synthetic Omarchy bar clock format')
 parser.add_argument('--agents',help='comma-separated providers to enable, default all')
+parser.add_argument('--width',type=int,default=1200,help='dashboard width, at least 1000')
 args=parser.parse_args()
 with tempfile.TemporaryDirectory(prefix='usage-dashboard-demo-') as tmp:
     base=Path(tmp);env=dict(os.environ)
@@ -45,6 +46,8 @@ with tempfile.TemporaryDirectory(prefix='usage-dashboard-demo-') as tmp:
         c.save_pinned_limit(provider, label, 'Weekly')
         c.atomic_json(c.STATE.parent / ('agents/usage/' + provider + '.json'), {
             'id': provider, 'name': name,
+            **({'chatgptCredits': {'remaining': 62500, 'spent': 1500, 'estimated': True,
+                  'trackingSince': '2026-09-30T00:00:00Z'}} if provider == 'codex' else {}),
             'limits': [{'label': label, 'percent': percent,
                         'resetsAt': (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=days)).isoformat()}]})
     ledger=c.Ledger(c.STATE/'usage.sqlite');rng=random.Random(7);now=dt.datetime.now().astimezone()
@@ -86,6 +89,8 @@ with tempfile.TemporaryDirectory(prefix='usage-dashboard-demo-') as tmp:
     # Copy QML into an isolated path so IPC cannot target the real dashboard.
     import shutil
     ui=base/'ui';shutil.copytree(ROOT/'ui',ui)
+    shell = ui / 'shell.qml'
+    shell.write_text(shell.read_text().replace('implicitWidth: 1200', 'implicitWidth: ' + str(max(1000, args.width))))
     proc=subprocess.Popen(['quickshell','-p',str(ui),'--no-color'],env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
     try:
         if args.capture:
@@ -100,12 +105,17 @@ with tempfile.TemporaryDirectory(prefix='usage-dashboard-demo-') as tmp:
             # Allow the initial report to finish, then capture the populated view.
             time.sleep(1)
             if args.view != 'overview':
-                command = (['preferences'] if args.view == 'settings' else
+                command = (['accountView', 'codex:local'] if args.view in ('account', 'reset') else
+                           ['preferences'] if args.view == 'settings' else
                            ['period', '1'] if args.view == 'today' else
                            ['firstHour'] if args.view == 'hour' else
                            ['filters'] if args.view == 'filters' else ['account', 'work'])
                 if args.view == 'sources': command = ['scrollTo', '750']
                 if args.view == 'breakdown': command = ['scrollTo', '1550']
+                if args.view == 'reset':
+                    subprocess.run(['quickshell','ipc','-p',str(ui),'--any-display','call','analytics',*command],capture_output=True,text=True,env=env,check=True)
+                    time.sleep(.5)
+                    command = ['resetWindow', c.digest('Weekly (7-day)', '')]
                 subprocess.run(['quickshell','ipc','-p',str(ui),'--any-display','call','analytics',*command],check=True,env=env)
                 time.sleep(0.8)
             subprocess.run(['quickshell','ipc','-p',str(ui),'--any-display','call','analytics','capture',str(output)],check=True,env=env)

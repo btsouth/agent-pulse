@@ -36,6 +36,122 @@ class AccountTests(unittest.TestCase):
     def add(self, key, folder, tokens=100, session=None):
         self.ledger.put(c.record(key, 'codex', session or key, self.now.isoformat(), 'gpt-4.1', '/project', 'CLI', input=tokens), self.root / folder / 'sessions/log.jsonl')
 
+    def test_chatgpt_credit_balances_follow_their_account_records(self):
+        usage = c.STATE.parent / 'agents/usage'
+        usage.mkdir(parents=True)
+        for agent, remaining in (('codex', 62500), ('work', 200)):
+            (usage / (agent + '.json')).write_text(json.dumps({'id': agent,
+                'chatgptCredits': {'remaining': remaining, 'spent': 10, 'trackingSince': '2026-09-30T00:00:00Z'}}))
+        self.assertEqual(c.quota('codex')['chatgptCredits']['remaining'], 62500)
+        self.assertEqual(c.account_quotas()[0]['work']['chatgptCredits']['remaining'], 200)
+        c.STATE.mkdir(parents=True, exist_ok=True)
+        (c.STATE / 'chatgpt-credit-snapshots.json').write_text(json.dumps({
+            'codex': {'remaining': 61000}, 'work': {'remaining': 150}}))
+        # Native refreshes can overwrite the credit field in either record.
+        (usage / 'codex.json').write_text(json.dumps({'id': 'codex', 'limits': []}))
+        (usage / 'work.json').write_text(json.dumps({'id': 'work', 'limits': []}))
+        self.assertEqual(c.quota('codex')['chatgptCredits']['remaining'], 61000)
+        self.assertEqual(c.account_quotas()[0]['work']['chatgptCredits']['remaining'], 150)
+
+    def write_usage(self, key, **fields):
+        path = c.STATE.parent / 'agents/usage' / (key + '.json')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({'id': key, **fields}))
+
+    def test_main_account_keeps_its_quota_when_selected_and_idle(self):
+        reset = self.now + dt.timedelta(days=2)
+        self.write_usage('codex', limits=[{'label': 'Weekly', 'percent': .4, 'resetsAt': reset.isoformat()}])
+        data = c.report(self.ledger, self.cfg, now=self.now, provider='codex', selection={'account': 'local'})
+        self.assertEqual(data['summary']['tokens'], 0)
+        self.assertEqual(data['cards'][0]['quota']['limits'][0]['percent'], .4)
+        views = {v['id']: v for v in data['accountViews']}
+        self.assertEqual(set(views), {'codex:local', 'codex:work', 'codex:personal'})
+        self.assertEqual(views['codex:local']['quota']['limits'][0]['tokens'], 0)
+
+    def test_reset_period_reconciles_totals_models_charts_and_boundaries(self):
+        reset = self.now + dt.timedelta(hours=2)
+        self.write_usage('codex', limits=[{'label': 'Session (5-hour)', 'resetsAt': reset.isoformat()}])
+        self.add_at('before', 'local', 3 + 1 / 3600, 900)
+        self.add_at('boundary', 'local', 3, 20)
+        self.add_at('recent', 'local', 1, 100)
+        self.add_at('other-account', 'work', 1, 7000)
+        self.ledger.put(c.record('other-model', 'codex', 'model', self.now.isoformat(), 'gpt-5', '', 'CLI',
+                                 input=40, output=10, cacheRead=30), self.root / 'local/log.jsonl')
+        view = next(v for v in c.report(self.ledger, self.cfg, now=self.now)['accountViews'] if v['id'] == 'codex:local')
+        window = view['quota']['limits'][0]
+        data = c.report(self.ledger, self.cfg, days=365, now=self.now, provider='codex',
+                        selection={'account': 'local', 'resetWindow': window['windowId']})
+        self.assertEqual(data['summary']['tokens'], 200)
+        self.assertEqual(window['tokens'], 200)
+        self.assertEqual(sum(m['tokens'] for m in data['models']), 200)
+        self.assertEqual(sum(d['total']['tokens'] for d in data['daily']), 200)
+        self.assertEqual(sum(h['total']['tokens'] for h in data['hourly']), 200)
+        self.assertEqual(data['period']['startAt'], int((self.now - dt.timedelta(hours=3)).timestamp()))
+        self.assertEqual(data['period']['resetLabel'], 'Session (5-hour)')
+        filtered = c.report(self.ledger, self.cfg, now=self.now, provider='codex',
+                            selection={'account': 'local', 'resetWindow': window['windowId'], 'model': 'gpt-5'})
+        self.assertEqual(filtered['summary']['tokens'], 80)
+        self.assertEqual(filtered['cards'][0]['quota']['limits'][0]['tokens'], 200)
+
+    def test_expired_unknown_and_model_limits_cannot_be_reset_periods(self):
+        for limit in [{'label': 'Weekly', 'resetsAt': (self.now - dt.timedelta(seconds=1)).isoformat()},
+                      {'label': 'Billing cycle', 'resetsAt': (self.now + dt.timedelta(days=1)).isoformat()},
+                      {'label': 'Weekly', 'title': 'Model A', 'resetsAt': (self.now + dt.timedelta(days=1)).isoformat()}]:
+            with self.subTest(limit=limit):
+                self.write_usage('codex', limits=[limit])
+                data = c.report(self.ledger, self.cfg, now=self.now, provider='codex', selection={'account': 'local', 'resetWindow': 'missing'})
+                self.assertTrue(data['period']['error'])
+                self.assertNotIn('windowId', data['accountViews'][0]['quota']['limits'][0])
+                self.assertEqual(data['summary']['tokens'], 0)
+
+    def test_t3_and_legacy_homes_keep_separate_accounts_without_duplicate_options(self):
+        t3 = self.root / '.t3/userdata/settings.json'
+        t3.parent.mkdir(parents=True)
+        t3.write_text(json.dumps({'providerInstances': {
+            'second': {'driver': 'codex', 'displayName': 'ChatGPT Second', 'config': {'homePath': str(self.root / 'second')}},
+            'work': {'driver': 'codex', 'displayName': 'Work in T3', 'config': {'homePath': str(self.root / 'work')}}}}))
+        self.cfg['codexHomes'] = [str(self.root / 'second'), str(self.root / 'legacy')]
+        self.add('main', '.codex', 10)
+        self.add('second', 'second', 20)
+        self.add('legacy', 'legacy', 30)
+        self.add('work', 'work', 40)
+        data = self.report()
+        views = data['accountViews']
+        self.assertEqual(len(views), 5)
+        second = next(v for v in views if v['name'] == 'ChatGPT Second')
+        self.assertEqual(self.report(second['accountId'])['summary']['tokens'], 20)
+        self.assertEqual(self.report('work')['summary']['tokens'], 40)
+        self.assertEqual(self.report('local')['summary']['tokens'], 10)
+        self.assertEqual(data['settings']['accounts'], self.cfg['accounts'])
+        self.assertNotIn('_historyResolved', data['settings'])
+
+    def test_native_record_matches_account_name_and_unlinked_record_has_no_history(self):
+        self.write_usage('codex-second', name='Work', limits=[{'label': 'Weekly', 'percent': .2}])
+        self.write_usage('claude-third', name='Claude Third', limits=[{'label': 'Weekly', 'percent': .9}])
+        self.cfg['enabled'] = ['codex', 'claude']
+        self.add('work', 'work')
+        data = c.report(self.ledger, self.cfg, now=self.now)
+        views = {v['id']: v for v in data['accountViews']}
+        self.assertEqual(views['codex:work']['recordId'], 'codex-second')
+        self.assertEqual(views['codex:work']['quota']['limits'][0]['percent'], .2)
+        self.assertFalse(views['claude:claude-third']['historyAvailable'])
+        self.assertEqual(views['claude:claude-third']['tokens'], 0)
+
+    def test_provider_qualified_quota_does_not_create_a_duplicate_account(self):
+        self.write_usage('codex:work', name='Different record label', limits=[{'label': 'Weekly', 'percent': .7}])
+        self.add('work', 'work')
+        data = c.report(self.ledger, self.cfg, now=self.now)
+        self.assertEqual(len(data['accountViews']), 3)
+        self.assertEqual(next(v for v in data['accountViews'] if v['accountId'] == 'work')['quota']['limits'][0]['percent'], .7)
+
+    def test_named_account_with_default_record_name_never_borrows_main_quota(self):
+        self.cfg['accounts'][0]['label'] = 'Codex'
+        self.write_usage('codex', name='Codex', limits=[{'label': 'Weekly', 'percent': .9}])
+        self.add('work', 'work')
+        data = c.report(self.ledger, self.cfg, now=self.now)
+        work = next(v for v in data['accountViews'] if v['accountId'] == 'work')
+        self.assertEqual(work['quota']['limits'], [])
+
     def report(self, account=None, days=7):
         with patch.object(c, 'quota', return_value={'limits': [{'label': 'Local quota'}]}), \
              patch.object(c, 'account_quotas', return_value=({}, {})), patch.object(c, 'theme', return_value={}):

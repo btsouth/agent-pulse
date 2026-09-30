@@ -25,7 +25,7 @@ Item {
         var totals = {}
         for (var h of hours) for (var id in h.providers || {})
             totals[id] = (totals[id] || 0) + Number(h.providers[id].tokens || 0)
-        return Object.keys(totals).sort((a, b) => totals[b] - totals[a]).slice(0, 4)
+        return Object.keys(totals).filter(id => totals[id] > 0).sort((a, b) => totals[b] - totals[a]).slice(0, 4)
     }
     readonly property var shown: expanded ? descending : descending.filter(h => h.title.endsWith("to now") || amount(h.total) > 0).slice(0, 10)
     readonly property real peak: {

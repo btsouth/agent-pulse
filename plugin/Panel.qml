@@ -160,9 +160,10 @@ Panel {
   property double nowMs: Date.now()
 
   readonly property var limits: limitWindows(provider)
-  readonly property var models: modelRows(providers)
+  readonly property var models: modelRows(allSelected ? providers : (provider ? [provider] : []))
   readonly property var headline: bindingWindow(provider)
   readonly property var balance: provider ? (provider.balance || null) : null
+  readonly property var chatgptCredits: provider ? (provider.chatgptCredits || null) : null
   // Banked resets a provider grants for clearing a rate limit window early.
   // -1 is a collector that never read them, held apart from a read that
   // reports none -- though both stay off the panel, since a standing
@@ -534,6 +535,24 @@ Panel {
     return label !== "" ? label : "Prepaid credits"
   }
 
+  function creditAmount(value) {
+    var amount = Number(value)
+    return amount.toLocaleString(Qt.locale("en_US"), "f", amount % 1 === 0 ? 0 : 2)
+  }
+
+  function creditRemainingText(credits) {
+    if (!credits || credits.error) return "Balance unavailable"
+    if (credits.unlimited) return "Unlimited credits"
+    return creditAmount(credits.remaining) + " remaining"
+  }
+
+  function creditUsedText(credits) {
+    if (!credits || credits.error || credits.unlimited) return ""
+    return creditAmount(credits.spent) + " used since "
+      + Qt.formatDateTime(new Date(credits.trackingSince), "MMM d, yyyy")
+      + " · estimated"
+  }
+
   // ---------------------------------------------------------------- content
 
   // The plan you pay for, under the name of the tool it pays for. Limits live
@@ -798,11 +817,11 @@ Panel {
               Layout.leftMargin: Style.space(3)
               Layout.fillWidth: true
               Layout.minimumWidth: Style.space(120)
-              label: "SOURCE"
+              label: "ACCOUNT"
               showLabel: false
               rowHeight: Style.space(42)
               value: root.selectedProviderId
-              options: [{value: "all", label: "All sources"}].concat(root.providers.map(function(p) {
+              options: [{value: "all", label: "All accounts"}].concat(root.providers.map(function(p) {
                 return {value: p.providerId, label: ({"codex": "Main", "codex-second": "Second", "claude-second": "Claude 2", "claude-third": "Claude 3", "opencode-go": "OpenCode Go"})[p.providerId] || p.providerName}
               }))
               foreground: root.foreground
@@ -828,7 +847,8 @@ Panel {
               fontFamily: root.fontFamily
               verticalPadding: Style.space(10)
               onClicked: {
-                Quickshell.execDetached([Quickshell.env("HOME") + "/.local/bin/omarchy-usage-dashboard"])
+                Quickshell.execDetached([Quickshell.env("HOME") + "/.local/bin/omarchy-usage-dashboard",
+                  "--account-record", root.selectedProviderId])
                 root.close()
               }
             }
@@ -1118,8 +1138,48 @@ Panel {
 
           // ---------- Balance / limits ----------
           PanelSeparator {
-            visible: balanceSection.visible || limitsSection.visible
+            visible: balanceSection.visible || limitsSection.visible || chatgptCreditsSection.visible
             foreground: root.foreground
+          }
+
+          Column {
+            id: chatgptCreditsSection
+            visible: !!root.chatgptCredits && !root.chatgptCredits.error
+              && isFinite(Number(root.chatgptCredits.remaining)) && Number(root.chatgptCredits.remaining) > 0
+            width: parent.width
+            spacing: Style.space(10)
+            PanelSectionHeader {
+              width: parent.width
+              text: "CHATGPT CREDITS"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: root.creditRemainingText(root.chatgptCredits)
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              wrapMode: Text.WordWrap
+            }
+            Text {
+              visible: text !== ""
+              width: parent.width
+              textFormat: Text.PlainText
+              text: root.creditUsedText(root.chatgptCredits)
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+            Text {
+              width: parent.width
+              text: "Work and Codex · account-wide"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
           }
 
           Column {
@@ -1230,7 +1290,7 @@ Panel {
           }
 
           PanelSeparator {
-            visible: hourlySection.visible && (allLimitsSection.visible || limitsSection.visible || balanceSection.visible)
+            visible: hourlySection.visible && (allLimitsSection.visible || limitsSection.visible || balanceSection.visible || chatgptCreditsSection.visible)
             foreground: root.foreground
           }
 

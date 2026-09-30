@@ -46,6 +46,12 @@ Scope {
             + (parts[1] === "now" ? "now" : parts[1].replace(/^\d{2}:\d{2}/, localClock(start + 3600)))
     }
     property var data: null
+    property string requestedAgent: Quickshell.env("AI_USAGE_ACCOUNT_RECORD") || ""
+    function openAgent(id) {
+        if (!data) { requestedAgent = id; return }
+        var account = accountViews.find(a => a.recordId === id)
+        if (id === "all" || account) chooseAccount(account ? account.id : "all")
+    }
     property var pulseSummary: null
     property string pulseSignature: ""
     property bool pulseFailed: false
@@ -59,6 +65,42 @@ Scope {
     property string metric: "tokens"
     property var selection: ({})
     property var navigation: []
+    readonly property var accountViews: data ? data.accountViews || [] : []
+    readonly property string accountViewId: selection.account && provider !== "all" ? provider + ":" + selection.account : "all"
+    readonly property var currentAccount: accountViews.find(a => a.id === accountViewId) || null
+    readonly property var periodOptions: {
+        var options = [1,7,30,90,365].map(n => ({id:String(n),name:n === 1 ? "Today" : n === 365 ? "Past year" : "Past " + n + " days"}))
+        if (currentAccount) (currentAccount.quota.limits || []).forEach(w => {
+            if (w.windowId && Date.parse(w.resetsAt) > nowMs)
+                options.push({id:w.windowId,name:"Since reset · " + w.label})
+        })
+        if (selection.resetWindow && !options.some(o => o.id === selection.resetWindow))
+            options.push({id:selection.resetWindow,name:"Reset window unavailable"})
+        return options
+    }
+    function chooseAccount(id) {
+        var account = accountViews.find(a => a.id === id)
+        navigation = []
+        provider = account ? account.provider : "all"
+        selection = account ? {account:account.accountId} : ({})
+        breakdown = "models"
+        filtersOpen = false
+        resetTableLimit()
+        refresh()
+    }
+    function chooseResetWindow(id) {
+        if (!currentAccount) return
+        navigation = []
+        var next = Object.assign({}, selection, {resetWindow:id})
+        delete next.day; delete next.hourStart
+        selection = next
+        breakdown = "models"
+        resetTableLimit(); refresh()
+    }
+    function choosePeriodOption(id) {
+        if (/^\d+$/.test(id)) choosePeriod(Number(id))
+        else chooseResetWindow(id)
+    }
     function goBack() {
         if (!navigation.length) return
         var stack = navigation.slice(); var old = stack.pop(); navigation = stack
@@ -75,7 +117,7 @@ Scope {
     function choosePeriod(count) {
         days = count; navigation = []
         var keep = Object.assign({}, selection)
-        delete keep.day; delete keep.hourStart
+        delete keep.day; delete keep.hourStart; delete keep.resetWindow
         selection = keep
         resetTableLimit()
         refresh()
@@ -114,10 +156,19 @@ Scope {
         }
         return top
     }
-    function clearSelection() { navigation = []; selection = ({}); resetTableLimit(); refresh() }
+    function clearSelection() {
+        navigation = []
+        var keep = {}
+        if (selection.account) keep.account = selection.account
+        if (selection.resetWindow) keep.resetWindow = selection.resetWindow
+        selection = keep
+        breakdown = "models"
+        resetTableLimit(); refresh()
+    }
     function chooseSource(id) {
-        var next = Object.assign({}, selection)
-        var excluded = (next.excludeSource || []).filter(source => source !== id)
+        navigation = []
+        var next = {}
+        var excluded = (selection.excludeSource || []).filter(source => source !== id)
         if (id === "all" || !excluded.length) delete next.excludeSource
         else next.excludeSource = excluded
         selection = next
@@ -141,7 +192,7 @@ Scope {
         resetTableLimit(); refresh()
     }
     function filterText() {
-        return Object.keys(selection).map(function(k) {
+        return Object.keys(selection).filter(k => k !== "resetWindow" && (k !== "account" || root.provider === "all")).map(function(k) {
             if (k === "account") return "account: "+((root.data.accountOptions.find(a=>a.id===root.selection[k]) || {}).label || root.selection[k])
             if (k === "excludeSource") return "excluded: "+root.selection[k].map(id=>root.providerName(id)).join(", ")
             if (k === "hourStart") return "hour: "+root.localClock(root.selection[k])
@@ -291,12 +342,13 @@ Scope {
         if (changed && !live.running && !settingsOpen) refresh(true)
     }
     function money(n) { return "$" + Number(n || 0).toLocaleString(Qt.locale("en_US"), 'f', 2) }
+    function creditAmount(n) { return Number(n).toLocaleString(Qt.locale("en_US"), 'f', Number(n) % 1 === 0 ? 0 : 2) }
     function shortDate(value) { return value ? Qt.formatDate(new Date(value+"T12:00:00"),"MMM d") : "" }
     function display(b) { return metric === "tokens" ? compact(b ? b.tokens : 0) : b && b.tokens > 0 && b.unpricedTokens === b.tokens ? "Unpriced" : money(b ? b.value : 0) }
     function amount(b) { return b ? (metric === "tokens" ? b.tokens : b.value) : 0 }
     function valueText(b) { return b.unpricedTokens === b.tokens && b.tokens > 0 ? "Unpriced" : money(b.value) + (b.unpricedTokens ? " + unpriced" : "") }
     function comparisonText() {
-        if (!data || selection.hourStart) return ""
+        if (!data || selection.hourStart || selection.resetWindow) return ""
         var current = Number(data.summary.tokens || 0), previous = Number(data.previous.tokens || 0)
         var span = selection.day ? "previous day" : days === 1 ? "yesterday so far" : "previous period"
         if (previous <= 0) return "No " + span + " baseline"
@@ -408,7 +460,13 @@ Scope {
     Process {
         id: scan
         stdout: StdioCollector { onStreamFinished: {
-            try { root.data = JSON.parse(text); root.error = "" } catch(e) { root.error = "Could not load usage data. Try refreshing." }
+            try {
+                root.data = JSON.parse(text); root.error = ""
+                if (root.requestedAgent !== "") {
+                    var id = root.requestedAgent; root.requestedAgent = ""
+                    root.openAgent(id)
+                }
+            } catch(e) { root.error = "Could not load usage data. Try refreshing." }
         } }
         stderr: StdioCollector { onStreamFinished: { if (text.trim()) console.warn(text.trim()) } }
         onExited: function(code) {
@@ -557,6 +615,11 @@ Scope {
         function capture(path: string): void { captureRoot.grabToImage(result => result.saveToFile(path)) }
         function captureTooltip(path: string): void { chartTip.contentItem.grabToImage(result => result.saveToFile(path)) }
         function account(id: string): void { root.drill("account", id, "") }
+        function accountView(id: string): void { root.chooseAccount(id) }
+        function agent(id: string): void {
+            root.openAgent(id)
+        }
+        function resetWindow(id: string): void { root.chooseResetWindow(id) }
         function model(name: string): void { root.filterBy("model", name, "") }
         function toggleSource(id: string): void { root.toggleSource(id) }
         function metric(name: string): void { root.metric = name }
@@ -597,6 +660,66 @@ Scope {
             border.color: control.activeFocus ? root.accent : control.excluded ? Qt.alpha(root.ink,0.08) : control.selected ? Qt.alpha(root.ink,0.26) : "transparent"
         }
         contentItem: Label { text: control.text; color: control.excluded ? Qt.alpha(root.ink,0.42) : control.selected ? root.bright : root.muted; font.pixelSize: 12; font.strikeout: control.excluded; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+    }
+    component ScopePicker: ComboBox {
+                    id: picker
+                    property string value: "all"
+                    signal chosen(string id)
+                    textRole: "name"; valueRole: "id"
+                    currentIndex: model.findIndex(p => p.id === value)
+                    onModelChanged: currentIndex = model.findIndex(p => p.id === value)
+                    onValueChanged: currentIndex = model.findIndex(p => p.id === value)
+                    font.family: root.fontFamily; font.pixelSize: 12; implicitHeight: 34
+                    onActivated: chosen(currentValue)
+                    background: Rectangle {
+                        radius: 3
+                        color: picker.down ? Qt.alpha(root.ink,0.18) : picker.hovered ? Qt.alpha(root.ink,0.08) : root.surface
+                        border.color: picker.activeFocus ? root.accent : root.edge
+                    }
+                    contentItem: Label {
+                        leftPadding: 14; rightPadding: 32
+                        text: picker.displayText
+                        color: root.ink
+                        font.pixelSize: 12
+                        verticalAlignment: Text.AlignVCenter
+                        elide: Text.ElideRight
+                    }
+                    indicator: Label {
+                        x: picker.width - width - 12
+                        y: (picker.height-height)/2
+                        text: "⌄"
+                        color: root.muted
+                        font.pixelSize: 16
+                    }
+                    delegate: ItemDelegate {
+                        required property var modelData
+                        required property int index
+                        width: picker.width - 8; height: 34
+                        highlighted: picker.highlightedIndex === index
+                        contentItem: Label {
+                            text: modelData.name
+                            color: parent.highlighted ? root.bright : root.ink
+                            font.pixelSize: 12
+                            verticalAlignment: Text.AlignVCenter
+                            leftPadding: 10
+                            elide: Text.ElideRight
+                        }
+                        background: Rectangle { radius: 3; color: parent.highlighted ? Qt.alpha(root.ink,0.12) : "transparent" }
+                    }
+                    popup: Popup {
+                        y: picker.height + 4
+                        width: picker.width
+                        implicitHeight: Math.min(contentItem.implicitHeight + 8, 8 * 34 + 8)
+                        padding: 4
+                        background: Rectangle { color: root.base; border.color: root.edge; radius: 3 }
+                        contentItem: ListView {
+                            clip: true
+                            implicitHeight: contentHeight
+                            model: picker.popup.visible ? picker.delegateModel : null
+                            currentIndex: picker.highlightedIndex
+                            ScrollIndicator.vertical: ScrollIndicator {}
+                        }
+                    }
     }
     component Card: Rectangle { color: root.surface; border.color: root.edge; radius: 4 }
     component HoverTip: ToolTip {
@@ -701,7 +824,7 @@ Scope {
                     Sub { width: parent.width; elide: Text.ElideRight; text: Quickshell.env("AI_USAGE_DEMO") === "1" ? "Demo data · no local history" : (root.data ? root.data.settings.enabled.map(p => root.providerName(p)).join(" · ") : "Local agent history") }
                 }
                 Item { Layout.fillWidth: true }
-                Sub { text: root.viewLoading || live.running ? "Updating usage…" : root.liveTodayView() && !root.pulseFailed && Quickshell.env("AI_USAGE_DEMO") !== "1" ? "Today · local history live" : root.data ? (root.days === 1 ? "Today" : root.data.period.start + "  to  " + root.data.period.end) + " · scanned " + root.when(root.data.coverage.scannedAt) : "Loading…" }
+                Sub { Layout.maximumWidth: 340; elide: Text.ElideRight; text: root.viewLoading || live.running ? "Updating usage…" : root.liveTodayView() && !root.pulseFailed && Quickshell.env("AI_USAGE_DEMO") !== "1" ? "Today · local history live" : root.data ? (root.selection.resetWindow ? "Since reset · " + root.data.period.resetLabel : root.days === 1 ? "Today" : root.data.period.start + "  to  " + root.data.period.end) : "Loading…" }
                 Choice { text: root.settingsOpen ? "Cancel" : "Settings"; onClicked: root.settingsOpen ? root.settingsOpen = false : root.openSettings() }
                 Choice { visible: root.settingsOpen; text: "Save preferences"; selected: true; enabled: !save.running; onClicked: root.saveSettings() }
                 Choice { visible: !root.settingsOpen; text: "Refresh"; enabled: !root.viewLoading && !live.running; onClicked: root.refreshLive() }
@@ -709,85 +832,42 @@ Scope {
             Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: root.edge }
             Label { visible: root.notice !== ""; text: root.notice; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: root.accent }
             Label { visible: root.error !== ""; text: root.error; color: root.colorFor("claude"); Layout.fillWidth: true; wrapMode: Text.WordWrap }
+            Label { visible: !!root.data && !!root.data.period.error; text: root.data ? root.data.period.error : ""; color: root.colorFor("claude"); Layout.fillWidth: true; wrapMode: Text.WordWrap }
             RowLayout {
                 visible: !root.settingsOpen
                 Layout.fillWidth: true
                 spacing: 10
-                ComboBox {
-                    id: sourcePicker
-                    Layout.preferredWidth: 190
-                    model: [{id:"all",name:"All sources"}].concat(root.data ? root.data.settings.enabled.map(p => ({id:p,name:root.providerName(p)})) : [])
-                    textRole: "name"; valueRole: "id"
-                    currentIndex: model.findIndex(p => p.id === root.provider)
-                    onModelChanged: currentIndex = model.findIndex(p => p.id === root.provider)
-                    font.family: root.fontFamily; font.pixelSize: 12; implicitHeight: 34
-                    Accessible.name: "Source focus"
-                    onActivated: root.chooseSource(currentValue)
-                    background: Rectangle {
-                        radius: 3
-                        color: sourcePicker.down ? Qt.alpha(root.ink,0.18) : sourcePicker.hovered ? Qt.alpha(root.ink,0.08) : root.surface
-                        border.color: sourcePicker.activeFocus ? root.accent : root.edge
-                    }
-                    contentItem: Label {
-                        leftPadding: 14; rightPadding: 32
-                        text: sourcePicker.displayText
-                        color: root.ink
-                        font.pixelSize: 12
-                        verticalAlignment: Text.AlignVCenter
-                        elide: Text.ElideRight
-                    }
-                    indicator: Label {
-                        x: sourcePicker.width - width - 12
-                        y: (sourcePicker.height-height)/2
-                        text: "⌄"
-                        color: root.muted
-                        font.pixelSize: 16
-                    }
-                    delegate: ItemDelegate {
-                        required property var modelData
-                        required property int index
-                        width: sourcePicker.width - 8; height: 34
-                        highlighted: sourcePicker.highlightedIndex === index
-                        contentItem: Label {
-                            text: modelData.name
-                            color: parent.highlighted ? root.bright : root.ink
-                            font.pixelSize: 12
-                            verticalAlignment: Text.AlignVCenter
-                            leftPadding: 10
-                            elide: Text.ElideRight
-                        }
-                        background: Rectangle { radius: 3; color: parent.highlighted ? Qt.alpha(root.ink,0.12) : "transparent" }
-                    }
-                    popup: Popup {
-                        y: sourcePicker.height + 4
-                        width: sourcePicker.width
-                        implicitHeight: Math.min(contentItem.implicitHeight + 8, 8 * 34 + 8)
-                        padding: 4
-                        background: Rectangle { color: root.base; border.color: root.edge; radius: 3 }
-                        contentItem: ListView {
-                            clip: true
-                            implicitHeight: contentHeight
-                            model: sourcePicker.popup.visible ? sourcePicker.delegateModel : null
-                            currentIndex: sourcePicker.highlightedIndex
-                            ScrollIndicator.vertical: ScrollIndicator {}
-                        }
-                    }
-                    Connections {
-                        target: root
-                        function onProviderChanged() { sourcePicker.currentIndex = sourcePicker.model.findIndex(p => p.id === root.provider) }
-                    }
+                Sub { text: "Account" }
+                ScopePicker {
+                    id: accountPicker
+                    Layout.preferredWidth: 300
+                    model: [{id:"all",name:"All accounts"}].concat(root.accountViews)
+                    value: root.accountViewId
+                    Accessible.name: "Account"
+                    onChosen: id => root.chooseAccount(id)
                 }
-                Choice { text: root.filtersOpen ? "Hide filters" : "Filters" + (Object.keys(root.selection).length ? " · active" : ""); onClicked: root.filtersOpen = !root.filtersOpen }
+                Sub { text: "Period" }
+                ScopePicker {
+                    id: periodPicker
+                    Layout.preferredWidth: 275
+                    model: root.periodOptions
+                    value: root.selection.resetWindow || String(root.days)
+                    Accessible.name: "Period"
+                    onChosen: id => root.choosePeriodOption(id)
+                }
+                Choice { text: root.filtersOpen ? "Hide filters" : "Filters" + (root.filterText() !== "" ? " · active" : ""); onClicked: root.filtersOpen = !root.filtersOpen }
                 Item { Layout.fillWidth: true }
-                Repeater {
-                    model: [1,7,30,90,365]
-                    Choice { required property int modelData; text: modelData === 1 ? "Today" : modelData === 365 ? "Year" : modelData + "d"; selected: root.days === modelData; onClicked: root.choosePeriod(modelData) }
-                }
             }
-            Flow { Layout.fillWidth: true; spacing: 8; visible: !root.settingsOpen && root.filtersOpen && !!root.data
-                Choice { text: "All accounts"; selected: !root.selection.account; onClicked: root.filterBy("account","") }
-                Repeater { model: root.data ? root.data.accountOptions : []
-                    Choice { required property var modelData; text: modelData.label; selected: root.selection.account===modelData.id; onClicked: root.filterBy("account",modelData.id,"") }
+            RowLayout {
+                visible: !root.settingsOpen && root.filtersOpen && !root.selection.account
+                Sub { text: "Source" }
+                ScopePicker {
+                    id: sourcePicker
+                    Layout.preferredWidth: 220
+                    model: [{id:"all",name:"All sources"}].concat(root.data ? root.data.settings.enabled.map(p => ({id:p,name:root.providerName(p)})) : [])
+                    value: root.provider
+                    Accessible.name: "Source focus"
+                    onChosen: id => root.chooseSource(id)
                 }
             }
             Flow { Layout.fillWidth: true; spacing: 8; visible: !root.settingsOpen && root.filtersOpen && !!root.data && (root.data.modelOptions.length > 1 || !!root.selection.model)
@@ -796,7 +876,7 @@ Scope {
                     Choice { required property var modelData; text: modelData.name; selected: root.selection.model===modelData.id; onClicked: root.filterBy("model",modelData.id,"") }
                 }
             }
-            Flow { Layout.fillWidth: true; spacing: 8; visible: !root.settingsOpen && root.filtersOpen && !!root.data
+            Flow { Layout.fillWidth: true; spacing: 8; visible: !root.settingsOpen && root.filtersOpen && !!root.data && !root.selection.account
                 Sub { text: "Include sources"; topPadding: 9; rightPadding: 6 }
                 Repeater { model: root.data ? root.data.settings.enabled : []
                     Choice { required property string modelData; text: root.providerName(modelData); selected: !root.isExcluded(modelData); excluded: root.isExcluded(modelData); onClicked: root.toggleSource(modelData) }
@@ -804,7 +884,7 @@ Scope {
             }
             Sub { Layout.fillWidth: true; visible: !root.settingsOpen && !!root.data && !!root.data.accountWarning; text: root.data ? root.data.accountWarning : ""; wrapMode: Text.WordWrap }
             RowLayout {
-                visible: !root.settingsOpen && Object.keys(root.selection).length > 0
+                visible: !root.settingsOpen && root.filterText() !== ""
                 Layout.fillWidth: true
                 Label { Layout.fillWidth: true; elide: Text.ElideMiddle; text: root.filterText() }
                 Choice { visible: root.navigation.length > 0; text: "Back"; onClicked: root.goBack() }
@@ -824,7 +904,7 @@ Scope {
                     width: scroll.availableWidth
                     spacing: 18
                     Card {
-                        visible: root.pinnedLimits.length > 0
+                        visible: root.pinnedLimits.length > 0 && !root.currentAccount
                         width: parent.width
                         height: visible ? pinnedColumn.implicitHeight + 32 : 0
                         Column {
@@ -913,8 +993,8 @@ Scope {
                                             font.pixelSize: 27
                                             font.weight: Font.Medium
                                         }
-                                        Label { visible: !root.liveTodayView(); text: root.data ? root.compact(root.data.summary.tokens) : "…"; font.pixelSize: 31; font.weight: Font.Medium }
-                                        Sub { text: root.liveTodayView() ? root.pulseStatus() : root.data ? root.data.summary.sessions + " sessions" : "Reading history" }
+                                        Label { visible: !root.liveTodayView(); text: root.currentAccount && !root.currentAccount.historyAvailable ? "—" : root.data ? root.compact(root.data.summary.tokens) : "…"; font.pixelSize: 31; font.weight: Font.Medium }
+                                        Sub { text: root.currentAccount && !root.currentAccount.historyAvailable ? "Token history not linked" : root.liveTodayView() ? root.pulseStatus() : root.data ? root.data.summary.sessions + " sessions" : "Reading history" }
                                     }
                                     Column { Layout.fillWidth: true; spacing: 6
                                         Sub { text: "OUTPUT"; font.letterSpacing: 1.1 }
@@ -941,13 +1021,111 @@ Scope {
                             }
                         }
                         Card {
+                            visible: !!root.currentAccount
+                            Layout.fillWidth: true
+                            implicitHeight: accountDetail.implicitHeight + 36
+                            Column {
+                                id: accountDetail
+                                anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 18
+                                spacing: 12
+                                RowLayout {
+                                    width: parent.width
+                                    Label { text: root.currentAccount ? root.currentAccount.name : ""; font.pixelSize: 18; font.weight: Font.DemiBold; Layout.fillWidth: true }
+                                    Sub { text: root.currentAccount ? root.currentAccount.quota.plan || "" : "" }
+                                }
+                                Label {
+                                    visible: !!root.currentAccount && !root.currentAccount.historyAvailable
+                                    width: parent.width; wrapMode: Text.WordWrap
+                                    text: "Limits are available. To see tokens and models, link this account's history folder in Settings → Accounts."
+                                }
+                                GridLayout {
+                                    width: parent.width; columns: 2; columnSpacing: 24
+                                    Column {
+                                        Layout.fillWidth: true; Layout.preferredWidth: parent.width / 2; Layout.alignment: Qt.AlignTop
+                                        spacing: 10
+                                        Sub { text: "ACCOUNT LIMITS"; font.letterSpacing: 1.1 }
+                                        Repeater {
+                                            model: root.currentAccount ? root.currentAccount.quota.limits || [] : []
+                                            Column {
+                                                required property var modelData
+                                                width: parent.width; spacing: 5
+                                                RowLayout {
+                                                    width: parent.width
+                                                    Label { text: modelData.title || modelData.label; Layout.fillWidth: true; elide: Text.ElideRight }
+                                                    Sub { text: Math.round(Number(modelData.percent || 0) * 100) + "% used" }
+                                                }
+                                                Rectangle {
+                                                    width: parent.width; height: 4; radius: 2; color: root.edge
+                                                    Rectangle { height: 4; radius: 2; width: parent.width * Math.min(1,Math.max(0,Number(modelData.percent || 0))); color: modelData.percent >= 0.9 ? root.colorFor("claude") : root.accent }
+                                                }
+                                                RowLayout {
+                                                    width: parent.width
+                                                    Sub {
+                                                        Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                                        text: modelData.windowId && root.currentAccount && root.currentAccount.historyAvailable
+                                                            ? root.compact(modelData.tokens) + " recorded tokens since reset · " + root.resetText(modelData.resetsAt)
+                                                            : root.resetText(modelData.resetsAt) || "Reset time not reported"
+                                                    }
+                                                    Choice {
+                                                        visible: !!modelData.windowId && !!root.currentAccount && root.currentAccount.historyAvailable
+                                                        text: "View usage"; selected: root.selection.resetWindow === modelData.windowId
+                                                        onClicked: root.chooseResetWindow(modelData.windowId)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Sub {
+                                            visible: !!root.currentAccount && !(root.currentAccount.quota.limits || []).length
+                                            width: parent.width; wrapMode: Text.WordWrap
+                                            text: root.currentAccount ? root.currentAccount.quota.error || "No account limits reported" : ""
+                                        }
+                                        Sub {
+                                            visible: !!root.currentAccount && !!root.currentAccount.quota.chatgptCredits
+                                            width: parent.width; wrapMode: Text.WordWrap
+                                            text: {
+                                                var credits = root.currentAccount ? root.currentAccount.quota.chatgptCredits : null
+                                                return !credits ? "" : credits.error ? "ChatGPT credits unavailable" : credits.unlimited ? "Unlimited ChatGPT credits"
+                                                    : root.creditAmount(credits.remaining) + " ChatGPT credits remaining · account-wide"
+                                            }
+                                        }
+                                        Sub {
+                                            visible: !!root.currentAccount && !!root.currentAccount.quota.balance
+                                            text: root.currentAccount && root.currentAccount.quota.balance ? root.money(root.currentAccount.quota.balance.remaining) + " prepaid credits remaining" : ""
+                                        }
+                                        Sub { text: root.currentAccount ? root.quotaAge(root.currentAccount.quota) : "" }
+                                    }
+                                    Column {
+                                        Layout.fillWidth: true; Layout.preferredWidth: parent.width / 2; Layout.alignment: Qt.AlignTop
+                                        spacing: 8
+                                        Sub { text: root.selection.resetWindow ? "MODELS · SINCE RESET" : "MODELS · SELECTED PERIOD"; font.letterSpacing: 1.1 }
+                                        Repeater {
+                                            model: root.data ? root.data.models.slice(0,8) : []
+                                            RowLayout {
+                                                required property var modelData
+                                                width: parent.width; spacing: 12
+                                                Label { text: modelData.name; Layout.fillWidth: true; elide: Text.ElideRight }
+                                                Label { text: root.compact(modelData.tokens); font.weight: Font.DemiBold }
+                                                Choice { text: "Explore"; onClicked: root.drill("model",modelData.name,"") }
+                                            }
+                                        }
+                                        Sub { visible: !!root.data && !root.data.models.length; text: "No recorded models in this period" }
+                                        Choice {
+                                            visible: !!root.data && root.data.models.length > 8
+                                            text: "All " + (root.data ? root.data.models.length : 0) + " models"
+                                            onClicked: { root.breakdown = "models"; root.tableLimit = root.data.models.length; scroll.contentItem.contentY = tableColumn.parent.y }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Card {
                             Layout.fillWidth: true
                             implicitHeight: root.data && root.data.hourly.length ? hourlyView.implicitHeight + 90 : 248
                             ColumnLayout {
                                 anchors.fill: parent; anchors.margins: 18; spacing: 10
                                 RowLayout {
                                     Layout.fillWidth: true
-                                    Label { text: root.selection.hourStart ? "Selected hour" : root.selection.day ? "Tokens by hour · "+root.selection.day : root.days === 1 ? "Tokens by hour · today" : "Daily activity"; font.weight: Font.DemiBold; font.pixelSize: 16 }
+                                    Label { text: root.selection.hourStart ? "Selected hour" : root.selection.day ? "Tokens by hour · "+root.selection.day : root.data && root.data.hourly.length ? "Tokens by hour" : "Daily activity"; font.weight: Font.DemiBold; font.pixelSize: 16 }
                                     Item { Layout.fillWidth: true }
                                     Choice { text: "Tokens"; selected: root.metric === "tokens"; onClicked: root.metric = "tokens" }
                                     Choice { text: "API value"; selected: root.metric === "value"; onClicked: root.metric = "value" }
@@ -1050,13 +1228,14 @@ Scope {
                         }
                     }
                     Card {
+                        visible: !root.currentAccount
                         width: parent.width; height: sourceColumn.implicitHeight + 36
                         Column {
                             id: sourceColumn
                             anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 18
                             spacing: 6
                             RowLayout { width: parent.width
-                                Label { text: "Sources and accounts"; font.pixelSize: 16; font.weight: Font.DemiBold }
+                                Label { text: "Accounts"; font.pixelSize: 16; font.weight: Font.DemiBold }
                                 Item { Layout.fillWidth: true }
                                 Choice { text: root.providerDetailsOpen ? "Hide details" : "Show limits and models"; onClicked: root.providerDetailsOpen = !root.providerDetailsOpen }
                             }
@@ -1073,6 +1252,12 @@ Scope {
                                 Item {
                                     required property var modelData
                                     width: sourceColumn.width; height: 40
+                                    activeFocusOnTab: true
+                                    Accessible.role: Accessible.Button
+                                    Accessible.name: "Open " + modelData.name
+                                    Keys.onReturnPressed: root.chooseAccount(modelData.id)
+                                    HoverHandler { cursorShape: Qt.PointingHandCursor }
+                                    TapHandler { onTapped: root.chooseAccount(modelData.id) }
                                     RowLayout { anchors.fill: parent; spacing: 12
                                         Rectangle { implicitWidth: 7; implicitHeight: 7; radius: 4; color: root.accountColor(modelData.provider,modelData.shade) }
                                         Label { text: modelData.name; Layout.preferredWidth: 190; elide: Text.ElideRight; font.pixelSize: 12 }
@@ -1085,11 +1270,11 @@ Scope {
                                     }
                                 }
                             }
-                            Choice { visible: !!root.data && root.data.cards.length > 6; text: root.providerRowsExpanded ? "Show fewer sources" : "Show all " + (root.data ? root.data.cards.length : 0) + " sources and accounts"; onClicked: root.providerRowsExpanded = !root.providerRowsExpanded }
+                            Choice { visible: !!root.data && root.data.cards.length > 6; text: root.providerRowsExpanded ? "Show fewer accounts" : "Show all " + (root.data ? root.data.cards.length : 0) + " accounts"; onClicked: root.providerRowsExpanded = !root.providerRowsExpanded }
                         }
                     }
                     GridLayout {
-                        visible: root.providerDetailsOpen
+                        visible: root.providerDetailsOpen && !root.currentAccount
                         height: visible ? implicitHeight : 0
                         width: parent.width; columns: root.data ? (root.data.cards.length > 3 ? 2 : Math.max(1,root.data.cards.length)) : 3; rowSpacing: 14; columnSpacing: 14
                         Repeater {
@@ -1124,7 +1309,7 @@ Scope {
                                         text: modelData.monthlyPrice !== null ? "Monthly plan: "+root.money(modelData.monthlyPrice) : "Monthly plan price not set"
                                     }
                                     Sub { visible: modelData.provider === "grok"; width: parent.width; wrapMode: Text.WordWrap; text: root.compact(modelData.modelCalls || 0)+" model calls · "+modelData.requests+" usage records" }
-                                    Sub { visible: !root.selection.account && modelData.quotaScope !== ""; text: modelData.quotaScope }
+                                    Sub { visible: modelData.quotaScope !== ""; text: modelData.quotaScope }
                                     Repeater {
                                         model: modelData.quota.limits || []
                                         Column {
@@ -1174,6 +1359,26 @@ Scope {
                                               text: root.money(walletSection.spent)+" spent of "+root.money(walletSection.wallet.funded)+" funded"
                                                     +(walletSection.wallet.estimated ? " · estimated" : "")
                                               font.pixelSize: 10 }
+                                    }
+                                    Column {
+                                        visible: !credits.error && isFinite(Number(credits.remaining)) && Number(credits.remaining) > 0
+                                        width: providerColumn.width; spacing: 4
+                                        readonly property var credits: modelData.quota.chatgptCredits || ({})
+                                        Sub { text: "ChatGPT credits · Work and Codex" }
+                                        Label {
+                                            width: parent.width; wrapMode: Text.WordWrap; font.pixelSize: 13
+                                            text: parent.credits.error ? "Balance unavailable"
+                                                : parent.credits.unlimited ? "Unlimited credits"
+                                                : root.creditAmount(parent.credits.remaining) + " remaining"
+                                        }
+                                        Sub {
+                                            visible: !!parent.credits.trackingSince && !parent.credits.error && !parent.credits.unlimited
+                                            width: parent.width; wrapMode: Text.WordWrap; font.pixelSize: 10
+                                            text: visible ? root.creditAmount(parent.credits.spent) + " used since "
+                                                + Qt.formatDateTime(new Date(parent.credits.trackingSince), "MMM d, yyyy")
+                                                + " · estimated" : ""
+                                        }
+                                        Sub { text: "Account-wide balance"; font.pixelSize: 10 }
                                     }
                                     Column {
                                         visible: !!modelData.models && modelData.models.length > 0

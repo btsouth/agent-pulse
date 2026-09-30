@@ -22,8 +22,7 @@ fi
 # panel barely sees the record without them.
 python3 "$project_dir/claude_limits.py" "${force[@]}" || true
 # Repair the intermittent Codex app-server timeout in Omarchy's collector.
-# The helper only probes records that actually failed at account/read or
-# account/rateLimits/read, and knows the configured home for named accounts.
+# Also collect purchased ChatGPT credit balances for each configured account.
 python3 "$project_dir/codex_limits.py" || true
 status=0
 python3 "$project_dir/collector.py" scan "${force[@]}" || status=$?
