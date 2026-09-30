@@ -1058,6 +1058,20 @@ class CollectorTests(unittest.TestCase):
                     'cache_creation_input_token_cost'))
                 self.assertAlmostEqual(c.price(row, rates)[0], expected)
 
+    def test_gpt_6_1_sol_prices_cache_and_full_request_long_context(self):
+        rates = c.load_rates()['document']
+        for cached, expected in [(22_000, .25 + .5 + .0022 + .0625),
+                                 (122_000, .25 + .5 + .0122 + .0625),
+                                 (122_001, .5 + .75 + .0244002 + .125)]:
+            with self.subTest(cached=cached):
+                row = c.record('g', 'codex', 's', 1, 'gpt-6.1-sol', '/p', 'CLI',
+                               input=125_000, output=50_000,
+                               cacheRead=cached, cacheWrite=25_000)
+                value, savings = c.price(row, rates)
+                self.assertIsNotNone(value)
+                self.assertAlmostEqual(value, expected, places=9)
+                self.assertAlmostEqual(savings, cached * (1.9e-6 if cached <= 122_000 else 3.8e-6))
+
     def test_new_commandcode_rates_keep_route_pricing(self):
         rates = c.load_rates()['document']
         for model, expected in [('xiaomi/mimo-v2.6-flash', .14 + .28 + .0028),
