@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.8.2 - 2026-09-29
+
 - Replace the fast API-key fingerprints in Ollama Cloud, CommandCode, and ClinePass quota caches with salted PBKDF2 fingerprints. Existing caches refresh once after upgrading; key changes still refresh immediately.
 ## 1.8.1 - 2026-09-29
 
