@@ -106,7 +106,7 @@ def main():
     for name,script in [(APP,'launch.sh'),(APP+'-refresh','refresh.sh'),(APP+'-notify-resets','notify-resets.sh')]:
         add(home/'.local/bin'/name,'#!/bin/bash\nexec '+shlex.quote(str(runtime/script))+' "$@"\n',0o755)
     add(data/'applications'/f'{APP}.desktop','[Desktop Entry]\nType=Application\nName=Agent Pulse\nComment=Local coding-agent token history and comparisons\nExec="'+encode_exec(home/'.local/bin'/APP)+'"\nIcon=utilities-system-monitor\nTerminal=false\nCategories=Utility;\n')
-    add(config/'systemd/user'/f'{APP}.service','[Unit]\nDescription=Refresh Agent Pulse\n[Service]\nType=oneshot\nExecStart=/usr/bin/python3 "'+encode_exec(runtime/'collector.py',True)+'" scan\nExecStartPost="'+encode_exec(runtime/'notify-resets.sh',True)+'"\n')
+    add(config/'systemd/user'/f'{APP}.service','[Unit]\nDescription=Refresh Agent Pulse\n[Service]\nType=oneshot\nExecStartPre=-/usr/bin/python3 "'+encode_exec(runtime/'codex_limits.py',True)+'"\nExecStart=/usr/bin/python3 "'+encode_exec(runtime/'collector.py',True)+'" scan\nExecStartPost="'+encode_exec(runtime/'notify-resets.sh',True)+'"\n')
     add(config/'systemd/user'/f'{APP}.timer','[Unit]\nDescription=Refresh Agent Pulse every 15 minutes\n[Timer]\nOnStartupSec=2min\nOnUnitActiveSec=15min\nPersistent=true\n[Install]\nWantedBy=timers.target\n')
     shell=None;bar_entry=None
     if args.with_plugin:

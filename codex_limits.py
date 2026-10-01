@@ -7,7 +7,10 @@ account/read time out despite a healthy connection. Read bytes directly here.
 """
 
 import json
+import fcntl
+import hashlib
 import os
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 import select
 import shutil
@@ -19,6 +22,78 @@ from datetime import datetime, timezone
 from urllib import request
 
 RESET_CREDITS_URL = 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits'
+USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
+
+
+def fetch_credit_balance(home):
+    """Read purchased ChatGPT credits and track observed balance decreases.
+
+    This account-wide balance includes Work and Codex. It is not an API dollar
+    balance or an earned rate-limit reset. Never infer credits from tokens.
+    """
+    auth = json.loads((Path(home) / 'auth.json').read_text())
+    tokens = auth.get('tokens') or {}
+    token, account = tokens.get('access_token'), tokens.get('account_id')
+    if not token or not account:
+        raise ValueError('Codex account credentials unavailable')
+    state = Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local/state')) / 'omarchy/ai-usage'
+    state.mkdir(parents=True, exist_ok=True)
+    tracker = state / 'chatgpt-credits.json'
+    # Serialize refreshes so two collectors cannot count the same decrease.
+    with open(state / '.chatgpt-credits.lock', 'a') as lock:
+        os.chmod(lock.name, 0o600)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        headers = {'Authorization': 'Bearer ' + token, 'ChatGPT-Account-Id': account,
+                   'Accept': 'application/json', 'Cache-Control': 'no-cache',
+                   'User-Agent': 'omarchy-usage-dashboard'}
+        with request.urlopen(request.Request(USAGE_URL, headers=headers), timeout=10) as response:
+            payload = json.load(response)
+        credits = payload.get('credits') if isinstance(payload, dict) else None
+        if not isinstance(credits, dict):
+            raise ValueError('ChatGPT credit balance unavailable')
+        now = datetime.now(timezone.utc).isoformat()
+        if credits.get('unlimited') is True:
+            return {'unlimited': True, 'updatedAt': now}
+        raw = credits.get('balance')
+        if raw is None or isinstance(raw, bool):
+            raise ValueError('ChatGPT credit balance unavailable')
+        try:
+            remaining = Decimal(str(raw))
+        except InvalidOperation:
+            raise ValueError('ChatGPT credit balance unavailable') from None
+        if not remaining.is_finite() or remaining < 0:
+            raise ValueError('ChatGPT credit balance unavailable')
+        try:
+            history = json.loads(tracker.read_text())
+        except (OSError, ValueError):
+            history = {}
+        if not isinstance(history, dict):
+            history = {}
+        # Account ids are opaque identifiers, not credentials. Keep even those
+        # out of the persisted file; credentials are never saved here.
+        key = hashlib.sha256(str(account).encode()).hexdigest()
+        previous = history.get(key) or {}
+        try:
+            spent = Decimal(str(previous.get('spent', 0)))
+            prior_balance = Decimal(str(previous.get('remaining', remaining)))
+            if not spent.is_finite() or spent < 0 or not prior_balance.is_finite() or prior_balance < 0:
+                raise ValueError('Invalid saved balance')
+        except (InvalidOperation, ValueError, AttributeError):
+            previous, spent, prior_balance = {}, Decimal(0), remaining
+        spent += max(Decimal(0), prior_balance - remaining)
+        entry = {'remaining': str(remaining), 'spent': str(spent),
+                 'trackingSince': previous.get('trackingSince') or now, 'updatedAt': now}
+        history[key] = entry
+        fd, temporary = tempfile.mkstemp(prefix='.chatgpt-credits-', dir=state)
+        try:
+            with os.fdopen(fd, 'w') as output:
+                json.dump(history, output)
+                output.write('\n')
+            os.replace(temporary, tracker)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        return entry | {'remaining': float(remaining), 'spent': float(spent), 'unlimited': False, 'estimated': True}
 
 
 def rpc(proc, request_id, method, params=None, timeout=8):
@@ -153,7 +228,7 @@ def fetch_banked_resets(home):
     return count, expiry.isoformat() if expiry and count else ''
 
 
-def repair(path, home):
+def repair(path, home, credit_balance=None):
     try:
         before = path.read_bytes()
         record = json.loads(before)
@@ -180,6 +255,13 @@ def repair(path, home):
             record['resetCreditsAvailable'] = count
             record['resetCreditsExpiresAt'] = expiry
             changed = True
+    try:
+        credits = credit_balance if credit_balance is not None else fetch_credit_balance(home)
+    except (OSError, ValueError, RuntimeError, TimeoutError):
+        credits = {'error': 'Credit balance unavailable'}
+    if record.get('chatgptCredits') != credits:
+        record['chatgptCredits'] = credits
+        changed = True
     if not changed:
         return False
     # A concurrent refresh owns a newer record; leave it alone.
@@ -207,10 +289,45 @@ def main():
     usage = Path(os.environ.get('XDG_STATE_HOME', home / '.local/state')) / 'omarchy/agents/usage'
     # The main card belongs to the default home. A caller may itself be
     # running under another CODEX_HOME (for example a second Codex session).
+    balances = {}
+    snapshots = {}
     for agent, folder in homes(config, home / '.codex').items():
         path = usage / (agent + '.json')
         if path.exists():
-            repair(path, folder)
+            if folder not in balances:
+                try:
+                    balances[folder] = fetch_credit_balance(folder)
+                except (OSError, ValueError, RuntimeError, TimeoutError):
+                    balances[folder] = {'error': 'Credit balance unavailable',
+                                        'updatedAt': datetime.now(timezone.utc).isoformat()}
+            repair(path, folder, balances[folder])
+            snapshots[agent] = balances[folder]
+    if snapshots:
+        # Native collectors replace their records independently. An owned
+        # snapshot keeps those writes from erasing the credit section.
+        state = usage.parent.parent / 'ai-usage'
+        state.mkdir(parents=True, exist_ok=True)
+        with open(state / '.chatgpt-credit-snapshots.lock', 'a') as lock:
+            os.chmod(lock.name, 0o600)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                saved = json.loads((state / 'chatgpt-credit-snapshots.json').read_text())
+            except (OSError, ValueError):
+                saved = {}
+            if isinstance(saved, dict):
+                for agent, value in snapshots.items():
+                    prior = saved.get(agent)
+                    if isinstance(prior, dict) and prior.get('updatedAt', '') > value.get('updatedAt', ''):
+                        snapshots[agent] = prior
+            fd, temporary = tempfile.mkstemp(prefix='.chatgpt-credit-snapshots-', dir=state)
+            try:
+                with os.fdopen(fd, 'w') as output:
+                    json.dump(snapshots, output)
+                    output.write('\n')
+                os.replace(temporary, state / 'chatgpt-credit-snapshots.json')
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
 
 
 if __name__ == '__main__':

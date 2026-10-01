@@ -1,7 +1,7 @@
 {
   "source": "OpenCode Go official documentation and OpenCode model catalog",
   "url": "https://opencode.ai/docs/go/#usage-limits",
-  "verifiedAt": "2026-09-15",
+  "verifiedAt": "2026-09-30",
   "notes": [
     "Go is a $10/month subscription; these listed token rates are the API-equivalent value used for its usage limits, not a bill.",
     "monthly_limit_usd mirrors the documented per-model monthly usage limit and drives the model allowance view.",
@@ -193,9 +193,7 @@
         ]
       ],
       "peak_weekdays_only": true,
-      "monthly_limit_usd": 15,
-      "monthly_limit_promo_usd": 60,
-      "promo_ends": "2026-09-20"
+      "monthly_limit_usd": 60
     },
     "opencode-go/deepseek-v4-pro": {
       "input_cost_per_token": 6.6e-07,
@@ -260,6 +258,38 @@
       "input_cost_per_token": 0,
       "output_cost_per_token": 0,
       "cache_read_input_token_cost": 0
+    },
+    "opencode-go/mimo-v2.6-flash": {
+      "input_cost_per_token": 1.4e-07,
+      "output_cost_per_token": 2.8e-07,
+      "cache_read_input_token_cost": 2.8e-09,
+      "monthly_limit_usd": 60
+    },
+    "opencode-go/mimo-v2.6-pro": {
+      "input_cost_per_token": 4.35e-07,
+      "output_cost_per_token": 8.7e-07,
+      "cache_read_input_token_cost": 3.625e-09,
+      "monthly_limit_usd": 15
+    },
+    "opencode-go/grok-4.7": {
+      "input_cost_per_token": 2e-06,
+      "output_cost_per_token": 6e-06,
+      "cache_read_input_token_cost": 5e-07,
+      "input_cost_per_token_above_200k_tokens": 4e-06,
+      "output_cost_per_token_above_200k_tokens": 1.2e-05,
+      "cache_read_input_token_cost_above_200k_tokens": 1e-06,
+      "monthly_limit_usd": 15
+    },
+    "opencode-go/gpt-6-luna": {
+      "input_cost_per_token": 1e-07,
+      "output_cost_per_token": 5e-07,
+      "cache_read_input_token_cost": 1e-08,
+      "cache_creation_input_token_cost": 1.25e-07,
+      "input_cost_per_token_above_272k_tokens": 2e-07,
+      "output_cost_per_token_above_272k_tokens": 7.5e-07,
+      "cache_read_input_token_cost_above_272k_tokens": 2e-08,
+      "cache_creation_input_token_cost_above_272k_tokens": 2.5e-07,
+      "monthly_limit_usd": 15
     }
   }
 }

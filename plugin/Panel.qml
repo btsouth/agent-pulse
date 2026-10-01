@@ -160,9 +160,10 @@ Panel {
   property double nowMs: Date.now()
 
   readonly property var limits: limitWindows(provider)
-  readonly property var models: modelRows(providers)
+  readonly property var models: modelRows(allSelected ? providers : (provider ? [provider] : []))
   readonly property var headline: bindingWindow(provider)
   readonly property var balance: provider ? (provider.balance || null) : null
+  readonly property var chatgptCredits: provider ? (provider.chatgptCredits || null) : null
   // Banked resets a provider grants for clearing a rate limit window early.
   // -1 is a collector that never read them, held apart from a read that
   // reports none -- though both stay off the panel, since a standing
@@ -204,22 +205,39 @@ Panel {
     return providers.map(function(p) { return p.providerId })
   }
 
+  // A record with indexed history at any time. The snapshot lists the agent
+  // records with history, since a second login has no provider id of its own;
+  // one written before that carries only the providers.
+  function hourlyHasHistory(data, id) {
+    return (data.availableSources || data.availableProviders || []).indexOf(id) >= 0
+  }
+
   function hourlyMissingIds() {
     var data = hourlyData()
     if (!data) return []
-    return hourlyIds().filter(function(id) { return (data.availableProviders || []).indexOf(id) < 0 })
+    return hourlyIds().filter(function(id) { return !hourlyHasHistory(data, id) })
   }
 
   function hourlyAvailable() {
     var data = hourlyData()
-    return !!data && hourlyIds().some(function(id) { return (data.availableProviders || []).indexOf(id) >= 0 })
+    return !!data && hourlyIds().some(function(id) { return hourlyHasHistory(data, id) })
+  }
+
+  // One source reads its own record's totals, so a second login is not shown
+  // its provider's history. All sources adds up the providers, which already
+  // hold every login.
+  function hourlyOwnRecord(data, id) {
+    return !allSelected && !!data.sources && !!data.sources[id]
   }
 
   function hourlyTotal(field) {
     var data = hourlyData()
     if (!data) return 0
     var ids = hourlyIds(), sum = 0
-    for (var i = 0; i < ids.length; i++) sum += Number((data.providers[ids[i]] || {})[field] || 0)
+    for (var i = 0; i < ids.length; i++) {
+      var entry = hourlyOwnRecord(data, ids[i]) ? data.sources[ids[i]] : (data.providers || {})[ids[i]]
+      sum += Number((entry || {})[field] || 0)
+    }
     return sum
   }
 
@@ -229,11 +247,50 @@ Panel {
     var ids = hourlyIds()
     return data.hours.slice(-6).reverse().map(function(hour) {
       var value = 0
-      for (var i = 0; i < ids.length; i++) value += Number((hour.providers || {})[ids[i]] || 0)
+      for (var i = 0; i < ids.length; i++)
+        value += Number(((hourlyOwnRecord(data, ids[i]) ? hour.sources : hour.providers) || {})[ids[i]] || 0)
       var repeated = data.hours.some(function(other) { return other.start !== hour.start && other.label === hour.label })
       var label = Qt.formatDateTime(new Date(Number(hour.start) * 1000), root.shortTimePattern)
       return { label: repeated ? label + " " + hour.zone : label, start: hour.start, tokens: value }
     })
+  }
+
+  // What the hourly section says when the source has no indexed history. The
+  // count comes from the source's own usage record when it has one, so the
+  // section still gives a number and says what is missing rather than only
+  // that something is.
+  readonly property var hourlyGap: {
+    if (allSelected || !provider || !hourlyData() || hourlyAvailable()) return null
+    var name = provider.providerName
+    if (provider.todayTotalTokens > 0)
+      return { title: Number(provider.todayTotalTokens).toLocaleString(Qt.locale("en_US"), "f", 0) + " tokens today",
+               detail: "No hourly breakdown yet. " + name + " has not been indexed on this PC. Refresh, or add its history folder under Settings in Analytics." }
+    if (provider.hasLocalStats === false)
+      return { title: "No hourly token history",
+               detail: name + " has no local usage logs, so only its limits are tracked here." }
+    return { title: "Not indexed yet",
+             detail: "No token history has been read for " + name + ". Refresh, or add its history folder under Settings in Analytics." }
+  }
+
+  function hourlyHeadline() {
+    if (hourlyAvailable()) {
+      var tokens = hourlyTotal("tokens")
+      return tokens > 0 ? Number(tokens).toLocaleString(Qt.locale("en_US"), "f", 0) + " processed tokens today"
+                        : "No tokens processed today"
+    }
+    return hourlyGap ? hourlyGap.title : "Hourly history is loading"
+  }
+
+  // Sources with no history, by name, for the All sources view.
+  function hourlyMissingText() {
+    var names = hourlyMissingIds().map(function(id) {
+      var match = providers.find(function(p) { return p.providerId === id })
+      return match ? match.providerName : id
+    })
+    if (names.length === 0) return ""
+    var shown = names.length > 3 ? names.slice(0, 2).concat([(names.length - 2) + " more"]) : names
+    var list = shown.length > 1 ? shown.slice(0, -1).join(", ") + " and " + shown[shown.length - 1] : shown[0]
+    return "No hourly history for " + list
   }
 
   function hourPeak() {
@@ -476,6 +533,24 @@ Panel {
   function balanceLabelText(b) {
     var label = b ? String(b.label || "").trim() : ""
     return label !== "" ? label : "Prepaid credits"
+  }
+
+  function creditAmount(value) {
+    var amount = Number(value)
+    return amount.toLocaleString(Qt.locale("en_US"), "f", amount % 1 === 0 ? 0 : 2)
+  }
+
+  function creditRemainingText(credits) {
+    if (!credits || credits.error) return "Balance unavailable"
+    if (credits.unlimited) return "Unlimited credits"
+    return creditAmount(credits.remaining) + " remaining"
+  }
+
+  function creditUsedText(credits) {
+    if (!credits || credits.error || credits.unlimited) return ""
+    return creditAmount(credits.spent) + " used since "
+      + Qt.formatDateTime(new Date(credits.trackingSince), "MMM d, yyyy")
+      + " · estimated"
   }
 
   // ---------------------------------------------------------------- content
@@ -742,11 +817,11 @@ Panel {
               Layout.leftMargin: Style.space(3)
               Layout.fillWidth: true
               Layout.minimumWidth: Style.space(120)
-              label: "SOURCE"
+              label: "ACCOUNT"
               showLabel: false
               rowHeight: Style.space(42)
               value: root.selectedProviderId
-              options: [{value: "all", label: "All sources"}].concat(root.providers.map(function(p) {
+              options: [{value: "all", label: "All accounts"}].concat(root.providers.map(function(p) {
                 return {value: p.providerId, label: ({"codex": "Main", "codex-second": "Second", "claude-second": "Claude 2", "claude-third": "Claude 3", "opencode-go": "OpenCode Go"})[p.providerId] || p.providerName}
               }))
               foreground: root.foreground
@@ -772,7 +847,8 @@ Panel {
               fontFamily: root.fontFamily
               verticalPadding: Style.space(10)
               onClicked: {
-                Quickshell.execDetached([Quickshell.env("HOME") + "/.local/bin/omarchy-usage-dashboard"])
+                Quickshell.execDetached([Quickshell.env("HOME") + "/.local/bin/omarchy-usage-dashboard",
+                  "--account-record", root.selectedProviderId])
                 root.close()
               }
             }
@@ -1062,8 +1138,48 @@ Panel {
 
           // ---------- Balance / limits ----------
           PanelSeparator {
-            visible: balanceSection.visible || limitsSection.visible
+            visible: balanceSection.visible || limitsSection.visible || chatgptCreditsSection.visible
             foreground: root.foreground
+          }
+
+          Column {
+            id: chatgptCreditsSection
+            visible: !!root.chatgptCredits && !root.chatgptCredits.error
+              && isFinite(Number(root.chatgptCredits.remaining)) && Number(root.chatgptCredits.remaining) > 0
+            width: parent.width
+            spacing: Style.space(10)
+            PanelSectionHeader {
+              width: parent.width
+              text: "CHATGPT CREDITS"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: root.creditRemainingText(root.chatgptCredits)
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              wrapMode: Text.WordWrap
+            }
+            Text {
+              visible: text !== ""
+              width: parent.width
+              textFormat: Text.PlainText
+              text: root.creditUsedText(root.chatgptCredits)
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+            Text {
+              width: parent.width
+              text: "Work and Codex · account-wide"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
           }
 
           Column {
@@ -1174,7 +1290,7 @@ Panel {
           }
 
           PanelSeparator {
-            visible: hourlySection.visible && (allLimitsSection.visible || limitsSection.visible || balanceSection.visible)
+            visible: hourlySection.visible && (allLimitsSection.visible || limitsSection.visible || balanceSection.visible || chatgptCreditsSection.visible)
             foreground: root.foreground
           }
 
@@ -1195,12 +1311,21 @@ Panel {
             Text {
               visible: !root.allSelected
               width: parent.width
-              text: root.hourlyAvailable() ? Number(root.hourlyTotal("tokens")).toLocaleString(Qt.locale("en_US"), "f", 0) + " processed tokens today"
-                                           : root.hourlyData() ? "No indexed token history for this source" : "Hourly history is loading"
+              text: root.hourlyHeadline()
               color: root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
               font.bold: true
+              wrapMode: Text.WordWrap
+            }
+            Text {
+              visible: !!root.hourlyGap
+              width: parent.width
+              text: root.hourlyGap ? root.hourlyGap.detail : ""
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
             }
             Repeater {
               model: hourlySection.rows
@@ -1214,9 +1339,9 @@ Panel {
               }
             }
             Text {
-              visible: root.hourlyMissingIds().length > 0
+              visible: root.allSelected && root.hourlyMissingIds().length > 0
               width: parent.width
-              text: root.hourlyMissingIds().length + " visible source" + (root.hourlyMissingIds().length === 1 ? " has" : "s have") + " no indexed hourly history"
+              text: root.hourlyMissingText()
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption

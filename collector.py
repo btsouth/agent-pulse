@@ -203,8 +203,75 @@ def t3_provider_instances():
         key = (driver, provider, str(root.absolute()))
         if key in seen: continue
         seen.add(key)
-        found.append({'driver': driver, 'provider': provider, 'root': key[2]})
+        found.append({'driver': driver, 'provider': provider, 'root': key[2],
+                      'id': str(instance_id), 'label': str(instance.get('displayName') or instance_id)})
     return found
+
+
+def agent_records():
+    records = {}
+    for path in sorted((STATE.parent / 'agents/usage').glob('*.json')):
+        try: record = json.loads(path.read_text())
+        except (OSError, ValueError): continue
+        if isinstance(record, dict): records[path.stem] = record
+    return records
+
+
+def record_provider(key, record):
+    explicit = record.get('provider')
+    if explicit in PROVIDERS: return explicit
+    return next((p for p in sorted(PROVIDERS, key=len, reverse=True)
+                 if key == p or key.startswith(p + '-') or key.startswith(p + ':')), None)
+
+
+def history_config(cfg):
+    """Resolve configured homes once into account identities, without saving
+    discovered accounts or touching authentication. Explicit folder ownership
+    wins over T3 and legacy extra homes. Unlinked agent records remain visible
+    as quota-only accounts rather than inheriting somebody else's history.
+    """
+    if cfg.get('_historyResolved'): return cfg
+    accounts = [dict(a, directories=list(a.get('directories', []))) for a in cfg.get('accounts', [])]
+    defaults = {'codex': HOME / '.codex', 'claude': HOME / '.claude', 'grok': HOME / '.grok',
+                'gemini': HOME / '.gemini', 'pi': HOME / '.pi/agent', 'omp': HOME / '.omp/agent',
+                'muse': Path(os.getenv('XDG_DATA_HOME', HOME / '.local/share')) / 'muse',
+                'opencode': Path(os.getenv('XDG_DATA_HOME', HOME / '.local/share')) / 'opencode',
+                'commandcode': HOME / '.commandcode', 'hermes': HOME / '.hermes'}
+    def add_home(provider, root, aid, label):
+        root = Path(root).expanduser().resolve()
+        if provider in defaults and root == defaults[provider].resolve(): return
+        if any(d['provider'] == provider and root.is_relative_to(Path(d['path']).expanduser().resolve())
+               for a in accounts for d in a['directories']): return
+        accounts.append({'id': aid, 'label': label, 'directories': [{'provider': provider, 'path': str(root)}],
+                         'discovered': True})
+    for instance in t3_provider_instances():
+        # A runtime routed to an API service is another client of the local
+        # service account. Its private tool home is not a separate login.
+        if instance['provider'] != instance['driver']: continue
+        add_home(instance['provider'], instance['root'], 't3-' + digest(instance['id'])[:16], instance['label'])
+    for key in HOME_KEYS:
+        provider = key.removesuffix('Homes')
+        routes = HERMES_ROUTES if provider == 'hermes' else ('opencode', 'opencode-go') if provider == 'opencode' else (provider,)
+        for path in cfg.get(key, []):
+            for route in dict.fromkeys(HERMES_ROUTE_NAMES.get(p, p) for p in routes):
+                if route not in PROVIDERS: continue
+                root = Path(path).expanduser().resolve()
+                add_home(route, root, 'home-' + digest(route, str(root))[:16], root.name or PROVIDERS[route])
+    records = agent_records()
+    for key, record in records.items():
+        if key in PROVIDERS: continue
+        matches = [a for a in accounts if a['id'] == key or any(key == d['provider'] + ':' + a['id'] for d in a['directories'])]
+        if not matches:
+            matches = [a for a in accounts if record.get('name') and a['label'].casefold() == str(record['name']).casefold()]
+        if len(matches) == 1:
+            matches[0]['recordId'] = key
+        elif not matches:
+            provider = record_provider(key, record)
+            if provider:
+                accounts.append({'id': key, 'label': str(record.get('name') or key), 'directories': [],
+                                 'providers': [provider], 'recordId': key, 'historyAvailable': False,
+                                 'discovered': True})
+    return cfg | {'accounts': accounts, '_historyResolved': True}
 
 
 def theme():
@@ -991,7 +1058,7 @@ class Ledger:
             conn.close()
 
     def scan(self, cfg, force=False, local_only=False):
-        cfg = dict(cfg)
+        cfg = history_config(cfg)
         for account in cfg.get('accounts', []):
             for directory in account['directories']:
                 key = ('opencode' if directory['provider'] == 'opencode-go' else directory['provider']) + 'Homes'
@@ -1270,20 +1337,33 @@ def go_quota(force=False):
     return cached
 
 
+def credit_snapshots():
+    try: data = json.loads((STATE / 'chatgpt-credit-snapshots.json').read_text())
+    except (OSError, ValueError): return {}
+    return data if isinstance(data, dict) else {}
+
+
 def account_quotas():
     # Labelled accounts may have their own agent usage records (for example a
     # second Codex home with its own collector). Index them by record id and
     # by record name so an account can pick up its limits when either matches.
     by_id, by_name = {}, {}
+    credits = credit_snapshots()
     try: paths = sorted((STATE.parent / 'agents/usage').glob('*.json'))
     except OSError: paths = []
     for path in paths:
         try: d = json.loads(path.read_text())
         except (OSError, ValueError): continue
-        if not isinstance(d, dict) or not (d.get('limits') or d.get('usageStatusText')): continue
+        if not isinstance(d, dict): continue
+        if path.stem in credits: d['chatgptCredits'] = credits[path.stem]
+        if not (d.get('limits') or d.get('usageStatusText') or d.get('chatgptCredits')): continue
         record = {'limits': d.get('limits', []), 'updatedAt': d.get('updatedAt'), 'error': d.get('usageStatusText', ''), 'plan': d.get('tierLabel', '')}
+        record['provider'] = record_provider(path.stem, d)
+        if d.get('chatgptCredits'): record['chatgptCredits'] = d['chatgptCredits']
         by_id[path.stem] = record
-        if d.get('name'): by_name.setdefault(str(d['name']).casefold(), record)
+        if d.get('name') and path.stem not in PROVIDERS:
+            name = str(d['name']).casefold()
+            by_name[name] = record if name not in by_name else None
     return by_id, by_name
 
 
@@ -1306,7 +1386,11 @@ def quota(provider):
     p = STATE.parent / 'agents/usage' / (provider + '.json')
     try:
         d = json.loads(p.read_text())
-        return {'limits': d.get('limits', []), 'updatedAt': d.get('updatedAt'), 'error': d.get('usageStatusText', ''), 'plan': d.get('tierLabel', '')}
+        credits = credit_snapshots()
+        if provider in credits: d['chatgptCredits'] = credits[provider]
+        result = {'limits': d.get('limits', []), 'updatedAt': d.get('updatedAt'), 'error': d.get('usageStatusText', ''), 'plan': d.get('tierLabel', '')}
+        if d.get('chatgptCredits'): result['chatgptCredits'] = d['chatgptCredits']
+        return result
     except (OSError, ValueError): return {'limits': [], 'error': 'Local token history only. No account quota snapshot is available.'}
 
 
@@ -1773,6 +1857,7 @@ def source_account(cfg):
     """Which account a recorded source path belongs to. The deepest configured
     folder wins; a synced machine's copy is its own account; anything else is
     the local login."""
+    cfg = history_config(cfg)
     roots = []
     for account in cfg.get('accounts', []):
         for directory in account['directories']:
@@ -1798,6 +1883,7 @@ def event_account(ids):
 
 
 def account_assignments(ledger, cfg):
+    cfg = history_config(cfg)
     labels = {'local': cfg.get('localAccountLabel', 'Local'), 'unassigned': 'Unassigned history', 'conflict': 'Needs review'}
     for account in cfg.get('accounts', []): labels[account['id']] = account['label']
     resolve, assignments = source_account(cfg), {}
@@ -1850,6 +1936,60 @@ def window_start(label, reset):
     return reset - dt.timedelta(**{unit: int(match.group(1))})
 
 
+def current_window(limit, now):
+    """A countable account window; model-only limits need their own scope."""
+    if not isinstance(limit, dict) or limit.get('title') or not limit.get('resetsAt'): return None
+    try: reset = dt.datetime.fromisoformat(re.sub(r'(\.\d{6})\d+', r'\1', str(limit['resetsAt'])).replace('Z', '+00:00'))
+    except ValueError: return None
+    if reset.tzinfo is None: reset = reset.replace(tzinfo=dt.timezone.utc)
+    start = window_start(limit.get('label'), reset)
+    return start if start is not None and start <= now < reset else None
+
+
+def account_views(ledger, cfg, labels, assignments, now):
+    """Every selectable source/account pair, independent of period and filters.
+    This catalog also owns quota association for cards and reset-period reports.
+    """
+    by_id, by_name = account_quotas()
+    named = {a['id']: a for a in cfg.get('accounts', [])}
+    pairs = {(p, 'local') for p in cfg['enabled']}
+    pairs |= {(d['provider'], a['id']) for a in named.values() for d in a['directories']}
+    pairs |= {(p, a['id']) for a in named.values() for p in a.get('providers', [])}
+    for event, p in ledger.db.execute('SELECT id,provider FROM events'):
+        pairs.add((p, assignments.get(event, 'unassigned')))
+    views = []
+    for p, aid in sorted(pairs, key=lambda pair: (list(PROVIDERS).index(pair[0]) if pair[0] in PROVIDERS else 99,
+                                                pair[1] != 'local', labels.get(pair[1], pair[1]).casefold())):
+        if p not in cfg['enabled']: continue
+        label = labels.get(aid, aid)
+        if aid == 'local':
+            q, scope, record_id = quota(p), 'Current login on this PC', p
+            name = ('ChatGPT' if p == 'codex' else PROVIDERS[p]) + ' · ' + label
+        else:
+            a = named.get(aid, {})
+            record_id = p + ':' + aid if p + ':' + aid in by_id else a.get('recordId') or aid
+            # Provider-qualified records take precedence; special histories
+            # and names that collide with default provider ids never borrow a login.
+            q = None if aid in PROVIDERS or aid in ('unassigned', 'conflict') or aid.startswith('machine:') else (
+                by_id.get(p + ':' + aid) or by_id.get(record_id) or by_name.get(label.casefold()))
+            if q is not None and q.get('provider') not in (None, p): q = None
+            scope = 'From its own usage record' if q is not None else ''
+            q = q or {'limits': [], 'error': 'No quota record linked to this account; current login quota belongs to its own account.'}
+            name = label if p == 'codex' and label.casefold().startswith('chatgpt') else PROVIDERS[p] + ' · ' + label
+        views.append({'id': p + ':' + aid, 'provider': p, 'accountId': aid, 'name': name,
+                      'recordId': record_id, 'quota': q, 'quotaScope': scope,
+                      'historyAvailable': named.get(aid, {}).get('historyAvailable', True)})
+    counts = limit_window_tokens(ledger, cfg, {v['id']: ({v['provider']}, v['accountId'], v['quota'].get('limits'))
+                                              for v in views if v['historyAvailable']}, now)
+    for view in views:
+        windows = counts.get(view['id'], {})
+        view['quota'] = view['quota'] | {'limits': [limit | ({'tokens': windows[i][1], 'startAt': windows[i][0],
+                                                             'windowId': digest(limit['label'], limit.get('title', ''))}
+                                                           if i in windows else {})
+                                                  for i, limit in enumerate(view['quota'].get('limits', []))]}
+    return views
+
+
 def limit_window_tokens(ledger, cfg, targets, now=None):
     """Local tokens used in each limit's current window.
 
@@ -1863,13 +2003,8 @@ def limit_window_tokens(ledger, cfg, targets, now=None):
     windows, found = {}, {}
     for key, (providers, account, limits) in targets.items():
         for index, limit in enumerate(limits or []):
-            if not isinstance(limit, dict) or limit.get('title') or not limit.get('resetsAt'): continue
-            # Providers can send microseconds or nanoseconds; keep six digits.
-            try: reset = dt.datetime.fromisoformat(re.sub(r'(\.\d{6})\d+', r'\1', str(limit['resetsAt'])).replace('Z', '+00:00'))
-            except ValueError: continue
-            if reset.tzinfo is None: reset = reset.replace(tzinfo=dt.timezone.utc)
-            start = window_start(limit.get('label'), reset)
-            if start is None or reset <= now: continue
+            start = current_window(limit, now)
+            if start is None: continue
             since = int(start.timestamp())
             found.setdefault(key, {})[index] = [since, 0]
             for provider in providers:
@@ -1895,72 +2030,134 @@ def limit_window_tokens(ledger, cfg, targets, now=None):
     return {key: {index: tuple(value) for index, value in entries.items()} for key, entries in found.items()}
 
 
-def record_limit_targets(cfg):
-    """The ledger history behind each agent record's limits. A provider's own
-    record is the current login, whose history is the local account; any other
-    record belongs to the labelled account with its id or its name, the same
-    match the dashboard cards use to find an account's limits.
+def record_targets(cfg):
+    """The ledger history behind each agent record. A provider's own record is
+    the current login, whose history is the local account; any other record
+    belongs to the labelled account with its id or its name, the same match the
+    dashboard cards use to find an account's limits. Maps a record id to
+    (providers, account, limits); limits is empty for a record that lists none.
     """
+    cfg = history_config(cfg)
     targets = {}
     try: paths = sorted((STATE.parent / 'agents/usage').glob('*.json'))
     except OSError: paths = []
     for path in paths:
         try: d = json.loads(path.read_text())
         except (OSError, ValueError): continue
-        if not isinstance(d, dict) or not isinstance(d.get('limits'), list): continue
+        if not isinstance(d, dict): continue
+        limits = d['limits'] if isinstance(d.get('limits'), list) else []
         if path.stem in PROVIDERS:
-            targets[path.stem] = ({path.stem}, 'local', d['limits'])
+            targets[path.stem] = ({path.stem}, 'local', limits)
             continue
         name = str(d.get('name') or '').casefold()
         account = next((a for a in cfg.get('accounts', [])
-                        if a['id'] == path.stem or (name and str(a['label']).casefold() == name)), None)
+                        if a.get('recordId', a['id']) == path.stem or path.stem == a['id']
+                        or path.stem == 'codex:' + a['id'] or (name and str(a['label']).casefold() == name)), None)
         if account:
-            targets[path.stem] = ({x['provider'] for x in account['directories']}, account['id'], d['limits'])
+            targets[path.stem] = ({x['provider'] for x in account['directories']}, account['id'], limits)
     return targets
+
+
+def record_limit_targets(cfg):
+    """record_targets for the records that carry limits."""
+    return {key: target for key, target in record_targets(cfg).items() if target[2]}
+
+
+def source_history(ledger, cfg, targets, providers, active=()):
+    """Which agent records have indexed history at any time. A labelled
+    account's history is told apart by its source paths, which is one cheap
+    pass over the distinct paths rather than over every event, and only for an
+    account with nothing today (active). A provider's own record is available
+    whenever the provider has any history, and a provider with no record of its
+    own keeps its plain id.
+    """
+    named = {key: (provs, account) for key, (provs, account, _) in targets.items() if account != 'local'}
+    found = {key for key, (provs, _, _) in targets.items() if key not in named and provs & set(providers)} | set(active)
+    named = {key: target for key, target in named.items() if key not in found}
+    if named:
+        resolve = source_account(cfg)
+        paths = [row[0] for row in ledger.db.execute('SELECT DISTINCT path FROM event_sources')]
+        found |= {key for key, (provs, account) in named.items()
+                  if any(resolve(provider, path) == account for provider in provs for path in paths)}
+    return sorted(found | {p for p in providers if p not in targets})
 
 
 def hourly_snapshot(ledger, now=None, cfg=None):
     """A small, local panel feed. Quota records have a different writer and
     cannot reliably carry hourly history, so the panel reads this file.
+
+    Totals are kept per provider and per agent record. A labelled second login
+    is its own record in the panel but shares its provider's table with the
+    main login, so the record totals split each provider by account.
     """
+    cfg = cfg or DEFAULTS
     now = now or dt.datetime.now().astimezone()
     day = now.date()
     start = int(dt.datetime.combine(day, dt.time()).timestamp())
     end = int(now.timestamp())
     hours = [{'start': ts, 'label': dt.datetime.fromtimestamp(ts).strftime('%H:%M'),
               'zone': dt.datetime.fromtimestamp(ts).astimezone().strftime('%Z'),
-              'tokens': 0, 'providers': {}}
+              'tokens': 0, 'providers': {}, 'sources': {}}
              for ts in range(start, end + 1, 3600)]
     providers = {}
     available_providers = [row[0] for row in ledger.db.execute('SELECT DISTINCT provider FROM events')]
+    targets = record_targets(cfg)
+    # Every record has an entry, so an idle login reads as zero rather than
+    # as a source the snapshot knows nothing about.
+    sources = {key: {'tokens': 0, 'timedTokens': 0, 'unplacedTokens': 0} for key in targets}
+    records = {}
+    for key, (provs, account, _) in targets.items():
+        for provider in provs: records.setdefault((provider, account), []).append(key)
+    resolve, accounts = source_account(cfg), {}
     total = timed = unplaced = 0
     ledger.db.row_factory = sqlite3.Row
-    for row in ledger.db.execute('SELECT provider,client,timePrecision,ts,input,output,cacheRead,cacheWrite '
-                                 'FROM events WHERE ts>=? AND ts<=?', (start, end)):
+    for row in ledger.db.execute('SELECT e.provider,e.client,e.timePrecision,e.ts,e.input,e.output,e.cacheRead,e.cacheWrite,'
+                                 'group_concat(s.path,char(31)) AS paths '
+                                 'FROM events e INDEXED BY events_time LEFT JOIN event_sources s ON s.event_id=e.id '
+                                 'WHERE e.ts>=? AND e.ts<=? GROUP BY e.id', (start, end)):
         r = dict(row)
         tokens = sum(number(r[f]) for f in FIELDS[:4])
+        # The same account an event gets everywhere else; one without a
+        # recorded source is unassigned history. The time index is named
+        # because grouping by id otherwise walks every event in the ledger.
+        origin = (r['provider'], r['paths'])
+        if origin not in accounts:
+            accounts[origin] = event_account(resolve(r['provider'], path) for path in r['paths'].split('\x1f')) if r['paths'] else 'unassigned'
+        owners = records.get((r['provider'], accounts[origin]), ())
         p = providers.setdefault(r['provider'], {'tokens': 0, 'timedTokens': 0, 'unplacedTokens': 0})
+        mine = [sources[o] for o in owners]
         total += tokens
         p['tokens'] += tokens
+        for m in mine: m['tokens'] += tokens
         if not timed_event(r):
             unplaced += tokens
             p['unplacedTokens'] += tokens
+            for m in mine: m['unplacedTokens'] += tokens
             continue
         index = int((r['ts'] - start) // 3600)
         if 0 <= index < len(hours):
             timed += tokens
             p['timedTokens'] += tokens
+            for m in mine: m['timedTokens'] += tokens
             hours[index]['tokens'] += tokens
             by_provider = hours[index]['providers']
             by_provider[r['provider']] = by_provider.get(r['provider'], 0) + tokens
+            by_source = hours[index]['sources']
+            for o in owners: by_source[o] = by_source.get(o, 0) + tokens
     return {'schemaVersion': 1, 'date': str(day), 'generatedAt': now.timestamp(),
             'timeZone': now.tzname() or '', 'utcOffsetMinutes': int(now.utcoffset().total_seconds() // 60),
             'tokens': total, 'timedTokens': timed, 'unplacedTokens': unplaced,
             'availableProviders': available_providers, 'providers': providers, 'hours': hours,
+            # The same totals for each agent record, so a second login shows
+            # its own usage instead of its provider's, and the records with
+            # indexed history at any time.
+            'sources': sources,
+            'availableSources': source_history(ledger, cfg, targets, available_providers,
+                                               [key for key, entry in sources.items() if entry['tokens']]),
             # Local tokens in each record's current limit windows, keyed by
             # record id. The panel matches them to its limits by label and
             # reset time, so a window that has since rolled over shows none.
-            'limitTokens': limit_tokens_by_record(ledger, cfg or DEFAULTS, now)}
+            'limitTokens': limit_tokens_by_record(ledger, cfg, now)}
 
 
 def limit_tokens_by_record(ledger, cfg, now=None):
@@ -1975,19 +2172,33 @@ def limit_tokens_by_record(ledger, cfg, now=None):
 
 def report(ledger, cfg, days=7, provider='all', now=None, selection=None):
     selection = selection or {}
+    saved_cfg, cfg = cfg, history_config(cfg)
     # Sources left out of this view. They are dropped before anything is
     # accumulated, so the summary, the cards, every breakdown, and the model
     # filter's own list all describe the same set of sources.
     excluded_sources = {str(name) for name in (selection.get('excludeSource') or []) if name}
     today = now or dt.datetime.now().astimezone()
+    labels, assignments = account_assignments(ledger, cfg)
+    views = account_views(ledger, cfg, labels, assignments, today)
+    views_by_id = {v['id']: v for v in views}
+    reset_limit, period_error = None, ''
+    if selection.get('resetWindow'):
+        view = views_by_id.get(provider + ':' + str(selection.get('account', '')))
+        reset_limit = next((w for w in view['quota']['limits'] if w.get('windowId') == selection['resetWindow']), None) if view else None
+        if reset_limit is None:
+            period_error = 'This reset window is unavailable. Choose an account and a current reset window, or select a date range.'
     start_date = today.date() - dt.timedelta(days=days - 1)
+    if reset_limit:
+        start_date = dt.datetime.fromtimestamp(reset_limit['startAt']).date()
+        days = (today.date() - start_date).days + 1
     selected_hour = int(selection['hourStart']) if selection.get('hourStart') else None
     selected_date = dt.date.fromisoformat(selection['day']) if selection.get('day') else (dt.datetime.fromtimestamp(selected_hour).date() if selected_hour is not None else None)
     # Local calendar boundaries, including DST transitions.
-    start = dt.datetime.combine(start_date, dt.time()).timestamp()
+    start = reset_limit['startAt'] if reset_limit else dt.datetime.combine(start_date, dt.time()).timestamp()
     previous_date = (selected_date - dt.timedelta(days=1)) if selected_date else None
     previous_start = dt.datetime.combine(previous_date if previous_date else start_date - dt.timedelta(days=days), dt.time()).timestamp()
     end = today.timestamp()
+    if period_error: start = end + 1
     previous_end = (dt.datetime.combine(previous_date, today.time().replace(tzinfo=None)).timestamp()
                     if selected_date == today.date() else
                     dt.datetime.combine(selected_date, dt.time()).timestamp() if selected_date else
@@ -1996,9 +2207,9 @@ def report(ledger, cfg, days=7, provider='all', now=None, selection=None):
     summary, previous = bucket(), bucket()
     hourly_unplaced = bucket()
     unplaced_providers = {}
-    providers = {p: bucket() for p in cfg['enabled']}
+    providers = {p: bucket() for p in cfg['enabled'] if p not in excluded_sources and provider in ('all', p)}
     daily = {str(start_date + dt.timedelta(days=n)): {'total': bucket(), 'providers': {p: bucket() for p in providers}, 'cards': {}} for n in range(days)}
-    hour_start, hour_end = start, end
+    hour_start, hour_end = dt.datetime.combine(start_date, dt.time()).timestamp(), end
     if selected_date:
         hour_start = dt.datetime.combine(selected_date, dt.time()).timestamp()
         hour_end = min(end, dt.datetime.combine(selected_date + dt.timedelta(days=1), dt.time()).timestamp() - 1)
@@ -2019,11 +2230,10 @@ def report(ledger, cfg, days=7, provider='all', now=None, selection=None):
     # model selection, or the list would vanish to the one entry already chosen
     # and a reader could not switch models without clearing the filter first.
     model_options = {}
-    labels, assignments = account_assignments(ledger, cfg)
     provider_accounts = {p: set() for p in providers}
     heatmap = collections.Counter()
     heatmap_fast = provider == 'all' and not excluded_sources and not any(
-        selection.get(key) for key in ('model', 'project', 'client', 'apiProvider', 'day', 'hourStart', 'account'))
+        selection.get(key) for key in ('model', 'project', 'client', 'apiProvider', 'day', 'hourStart', 'account', 'resetWindow'))
     unknown = set()
     rates = load_rates()
     ledger.db.row_factory = sqlite3.Row
@@ -2144,50 +2354,31 @@ def report(ledger, cfg, days=7, provider='all', now=None, selection=None):
     coverage['additionalHomes'] = sum(len(cfg.get(k, [])) for k in HOME_KEYS) + sum(len(a['directories']) for a in cfg.get('accounts', []))
     # One overview card per account so labelled histories are never merged.
     # A named account uses only its own price; the local group uses the
-    # provider price. Quota remains attached to the current login only.
+    # provider price. Quota association comes from the same account catalog.
     named_providers = {d['provider'] for account in cfg.get('accounts', []) for d in account['directories']}
-    accounts_by_id, accounts_by_name = account_quotas()
     cards = []
     for p, b in providers.items():
         if provider != 'all' and p != provider: continue
         group = sorted(((aid, bucket) for (card_provider, aid), bucket in accounts.items() if card_provider == p),
                        key=lambda item: item[1]['tokens'], reverse=True)
+        if selection.get('account') and not group and p + ':' + selection['account'] in views_by_id:
+            group = [(selection['account'], bucket())]
         for shade, (aid, account_bucket) in enumerate(group):
             fin = finish(account_bucket)
+            view = views_by_id[p + ':' + aid]
             if aid == 'local':
                 name = PROVIDERS[p] + (' · ' + labels['local'] if p in named_providers else '')
                 monthly = cfg['monthlyPrices'].get(p)
-                if selection.get('account'):
-                    card_quota, scope = {'limits': [], 'error': 'View All accounts for current-login quota. History labels do not identify credentials.'}, ''
-                else:
-                    card_quota, scope = quota(p), 'Current login on this PC'
             else:
                 name = PROVIDERS[p] + ' · ' + labels[aid]
                 monthly = cfg['monthlyPrices'].get(aid)
-                # A labelled account with its own agent record shows that
-                # record's limits; otherwise quota stays with the login.
-                own = None if aid in PROVIDERS else (accounts_by_id.get(str(aid)) or accounts_by_name.get(labels[aid].casefold()))
-                if own is not None:
-                    card_quota, scope = own, 'From its own usage record'
-                else:
-                    card_quota, scope = {'limits': [], 'error': 'Quota is shown for the current login only.'}, ''
             cards.append(fin | {'id': p + ':' + aid, 'provider': p, 'accountId': aid, 'name': name, 'monthlyPrice': monthly,
                                 'shade': shade, 'shades': len(group),
-                                'quota': card_quota, 'quotaScope': scope,
+                                'quota': view['quota'], 'quotaScope': view['quotaScope'],
                                 'valueShare': 100 * fin['value'] / summary['value'] if summary['value'] else None})
     # Heaviest users of the period first. Shades were already assigned within
     # each provider, so reordering keeps every account's colour.
     cards.sort(key=lambda card: card['tokens'], reverse=True)
-    # Local tokens in each card's current limit windows, from the history of
-    # the account the card belongs to. They describe the whole window, so the
-    # report's own filters and period do not narrow them.
-    window_counts = limit_window_tokens(ledger, cfg, {card['id']: ({card['provider']}, card['accountId'], card['quota'].get('limits'))
-                                                      for card in cards}, today)
-    for card in cards:
-        counts = window_counts.get(card['id'])
-        if counts:
-            card['quota'] = card['quota'] | {'limits': [limit | {'tokens': counts[index][1]} if index in counts else limit
-                                                        for index, limit in enumerate(card['quota']['limits'])]}
     # Model-level allowance for Go. The quota endpoint reports only aggregate
     # windows, so value against each model's documented monthly limit is
     # estimated from local history during the current monthly reset window.
@@ -2238,7 +2429,11 @@ def report(ledger, cfg, days=7, provider='all', now=None, selection=None):
         route_rows.sort(key=lambda item: item['tokens'], reverse=True)
         model_rows.append(finish(b) | {'name': name, 'provider': route_rows[0]['provider'] if route_rows else '', 'routes': route_rows})
     model_rows.sort(key=lambda x: x['tokens'], reverse=True)
-    return {'selection': selection, 'generatedAt': time.time(), 'period': {'days': days, 'start': str(start_date), 'end': str(today.date())},
+    for view in views:
+        view.update(finish(accounts.get((view['provider'], view['accountId']), bucket())))
+    return {'selection': selection, 'generatedAt': time.time(), 'period': {'days': days, 'start': str(start_date), 'end': str(today.date()),
+                                                                       'startAt': start, 'resetLabel': reset_limit['label'] if reset_limit else '', 'error': period_error},
+            'accountViews': views,
             'accountOptions': account_options,
             'modelOptions': [{'id': name, 'name': name, 'tokens': tokens}
                              for name, tokens in sorted(model_options.items(), key=lambda item: item[1], reverse=True)],
@@ -2247,7 +2442,7 @@ def report(ledger, cfg, days=7, provider='all', now=None, selection=None):
             'availableProviders': [{'id': p, 'name': name} for p, name in PROVIDERS.items()],
             'summary': finish(summary), 'previous': finish(previous),
             'cards': cards, 'goAllowance': go_allowance,
-            'providers': [finish(b) | {'id': p, 'name': PROVIDERS[p], 'quota': quota(p) if not selection.get('account') else {'limits': [], 'error': 'View All accounts for current-login quota. History labels do not identify credentials.'}, 'quotaScope': 'Current login on this PC',
+            'providers': [finish(b) | {'id': p, 'name': PROVIDERS[p], 'quota': views_by_id.get(p + ':' + selection.get('account', 'local'), {}).get('quota', {'limits': []}), 'quotaScope': 'Current login on this PC',
                                       'valueShare': 100 * b['value'] / summary['value'] if summary['value'] else None,
                                       'monthlyPrice': cfg['monthlyPrices'].get(p) if provider_accounts[p] <= {'local'} else None}
                           for p, b in providers.items() if provider == 'all' or p == provider],
@@ -2265,7 +2460,7 @@ def report(ledger, cfg, days=7, provider='all', now=None, selection=None):
             # Reports reach the bar panel and the dashboard window. The key
             # comes back masked so the settings form can show that one is
             # stored without echoing it.
-            'settings': masked_settings(cfg), 'theme': theme()}
+            'settings': masked_settings(saved_cfg), 'theme': theme()}
 
 
 def write_agent_record(ledger, provider):
@@ -2301,7 +2496,7 @@ def main():
     parser.add_argument('action', choices=['report', 'scan', 'pulse', 'go', 'settings', 'theme', 'pin'])
     parser.add_argument('--days', type=int, choices=[1, 7, 30, 90, 365], default=7)
     parser.add_argument('--provider', choices=['all', *PROVIDERS], default='all')
-    for field in ('model', 'project', 'client', 'apiProvider', 'day', 'account'): parser.add_argument('--' + field)
+    for field in ('model', 'project', 'client', 'apiProvider', 'day', 'account', 'resetWindow'): parser.add_argument('--' + field)
     parser.add_argument('--hourStart', type=int)
     # A source (provider) can be left out of a view without turning it off in
     # settings: repeat the flag once per source to exclude.
@@ -2327,7 +2522,7 @@ def main():
             if not CONFIG.exists():
                 found = {r[0] for r in ledger.db.execute('SELECT DISTINCT provider FROM events')}
                 cfg = cfg | {'enabled': [p for p in PROVIDERS if p in found] or cfg['enabled']}
-            print(json.dumps(report(ledger, cfg, args.days, args.provider, selection={k: getattr(args, k) for k in ('model', 'project', 'client', 'apiProvider', 'day', 'account', 'hourStart', 'excludeSource') if getattr(args, k)})))
+            print(json.dumps(report(ledger, cfg, args.days, args.provider, selection={k: getattr(args, k) for k in ('model', 'project', 'client', 'apiProvider', 'day', 'account', 'resetWindow', 'hourStart', 'excludeSource') if getattr(args, k)})))
         finally: ledger.db.close()
         return
     STATE.mkdir(parents=True, exist_ok=True)

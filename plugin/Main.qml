@@ -16,6 +16,22 @@ Item {
   readonly property string usageDir: (Quickshell.env("XDG_STATE_HOME") || home + "/.local/state") + "/omarchy/agents/usage"
   readonly property string hourlyPath: (Quickshell.env("XDG_STATE_HOME") || home + "/.local/state") + "/omarchy/ai-usage/hourly-summary.json"
   property var hourlySummary: null
+  property var creditSnapshots: ({})
+
+  FileView {
+    id: creditFile
+    path: (Quickshell.env("XDG_STATE_HOME") || root.home + "/.local/state")
+      + "/omarchy/ai-usage/chatgpt-credit-snapshots.json"
+    watchChanges: true
+    atomicWrites: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: {
+      try { root.creditSnapshots = JSON.parse(text()) || ({}) }
+      catch (e) { root.creditSnapshots = ({}) }
+    }
+    onLoadFailed: root.creditSnapshots = ({})
+  }
 
   FileView {
     id: hourlyFile
@@ -186,6 +202,7 @@ Item {
     running: false
     onExited: {
       hourlyFile.reload()
+      creditFile.reload()
       root.rescanAgents()
       if (root.pendingUpdateKind !== "") {
         var kind = root.pendingUpdateKind
@@ -311,6 +328,8 @@ Item {
       || numberValue(p.activeDays) > 0 || numberValue(p.todayPrompts) > 0
       || numberValue(p.todaySessions) > 0 || (p.limits && p.limits.length > 0)
       || !!p.balance
+      || (!!p.chatgptCredits && !p.chatgptCredits.error
+        && isFinite(Number(p.chatgptCredits.remaining)) && Number(p.chatgptCredits.remaining) > 0)
   }
 
   // A prepaid agent's credit ledger. Like rate limits, the balance is
@@ -350,6 +369,7 @@ Item {
       limitsStale: record.limitsStale === true,
       tierLabel: String(record.tierLabel || ""),
       balance: balanceValue(record.balance),
+      chatgptCredits: creditSnapshots[String(record.id)] || record.chatgptCredits || null,
       resetCreditsAvailable: bankedResetsValue(record.resetCreditsAvailable),
       resetCreditsExpiresAt: String(record.resetCreditsExpiresAt || ""),
 

@@ -15,6 +15,9 @@ repo = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--capture-source', type=Path, help='save an offscreen source picker image')
 parser.add_argument('--capture-header', type=Path, help='save the offscreen panel header image')
+parser.add_argument('--capture-hourly', type=Path, help='save the offscreen hourly section image for the selected source')
+parser.add_argument('--capture-credits', type=Path, help='save the synthetic ChatGPT credit section')
+parser.add_argument('--hourly-source', default='cursor', help='source shown in the hourly section image')
 parser.add_argument('--theme', choices=['dark', 'light'], default='dark')
 parser.add_argument('--panel-width', type=int, default=460)
 parser.add_argument('--panel-height', type=int, default=360)
@@ -24,7 +27,7 @@ omarchy_commons = Path('/usr/share/omarchy/shell/Commons')
 if not omarchy_ui.exists() or not omarchy_commons.exists():
     raise SystemExit('This check needs the installed Omarchy shell')
 
-with tempfile.TemporaryDirectory(prefix='.panel-qa-', dir=repo) as temp:
+with tempfile.TemporaryDirectory(prefix='panel-qa-') as temp:
     root = Path(temp)
     (root / 'Commons').symlink_to(omarchy_commons)
     ui = root / 'Ui'
@@ -53,10 +56,14 @@ Item {
     panel_file = root / 'plugin/Panel.qml'
     panel_file.write_text(panel_file.read_text().replace(
         '  function modelTooltip(row) {',
+        '  function qaCredits() { return {visible: chatgptCreditsSection.visible, remaining: creditRemainingText(chatgptCredits), used: creditUsedText(chatgptCredits)} }\n'
+        '  function qaCaptureCredits(path) { return chatgptCreditsSection.grabToImage(function(image) { image.saveToFile(path) }) }\n'
         '  function qaSourcePicker() { return {label: providerSwitch.label, value: providerSwitch.value, text: providerSwitch.currentLabel()} }\n'
         '  function qaHeader() { return {pickerX: providerSwitch.mapToItem(column, 0, 0).x, pickerY: providerSwitch.mapToItem(column, 0, 0).y, pickerWidth: providerSwitch.width, buttonX: analyticsButton.mapToItem(column, 0, 0).x, buttonY: analyticsButton.mapToItem(column, 0, 0).y, buttonWidth: analyticsButton.width, columnWidth: column.width, pinnedY: pinnedSection.y} }\n'
         '  function qaCaptureSource(path) { return providerSwitch.grabToImage(function(image) { image.saveToFile(path) }) }\n\n'
         '  function qaCaptureHeader(path) { return headerControls.grabToImage(function(image) { image.saveToFile(path) }) }\n\n'
+        '  function qaHourly() { return {headline: hourlyHeadline(), gap: hourlyGap, missing: hourlyMissingText(), rows: hourRows().map(function(row) { return row.tokens }), total: hourlyTotal("tokens")} }\n'
+        '  function qaCaptureHourly(path) { return hourlySection.grabToImage(function(image) { image.saveToFile(path) }) }\n\n'
         '  function qaScrollState() { return {contentY: panelFlick.contentY, contentHeight: panelFlick.contentHeight, height: panelFlick.height, size: panelScroll.size, position: panelScroll.position, width: panelScroll.width, visible: panelScroll.visible, outsideClip: panelScroll.parent === keyCatcher} }\n'
         '  function qaScrollDown() { panelScroll.increase(); return qaScrollState() }\n\n'
         '  function qaScrollBar() { return panelScroll }\n'
@@ -73,7 +80,7 @@ ShellRoot {
     width: 600
     height: 900
     visible: true
-    color: "#151b18"
+    color: panel.surface
     Plugin.Panel { id: panel; width: 460; height: 20 }
   }
   // Keep the QtTest pointer helper available for IPC without auto-running a test suite.
@@ -87,7 +94,12 @@ ShellRoot {
     function watchLimits(): string { return JSON.stringify(panel.allLimitRows()) }
     function source(): string { return JSON.stringify(panel.qaSourcePicker()) }
     function header(): string { return JSON.stringify(panel.qaHeader()) }
+    function credits(): string { return JSON.stringify(panel.qaCredits()) }
+    function captureCredits(path: string): string { return String(panel.qaCaptureCredits(path)) }
     function selectCodex(): void { panel.selectedProviderId = "codex" }
+    function select(id: string): void { panel.selectedProviderId = id }
+    function hourly(): string { return JSON.stringify(panel.qaHourly()) }
+    function captureHourly(path: string): string { return String(panel.qaCaptureHourly(path)) }
     function captureSource(path: string): string { return String(panel.qaCaptureSource(path)) }
     function captureHeader(path: string): string { return String(panel.qaCaptureHeader(path)) }
     function scrollState(): string { return JSON.stringify(panel.qaScrollState()) }
@@ -121,6 +133,31 @@ ShellRoot {
         ],
         'modelUsage': {'claude-sonnet-4': {'inputTokens': 20}},
     }))
+    credits_path = root / 'state/omarchy/ai-usage/chatgpt-credit-snapshots.json'
+    credits_path.parent.mkdir(parents=True, exist_ok=True)
+    credits_path.write_text(json.dumps({'codex': {'remaining': 62500, 'spent': 1500,
+        'estimated': True, 'trackingSince': '2026-09-30T12:00:00Z'}}))
+    # A source that keeps no local logs, and one whose own record counts
+    # tokens although the ledger has never indexed it.
+    (usage / 'cursor.json').write_text(json.dumps({
+        'id': 'cursor', 'name': 'Cursor', 'hasLocalStats': False,
+        'limits': [{'label': 'Monthly', 'percent': 0.1}]}))
+    (usage / 'grok.json').write_text(json.dumps({
+        'id': 'grok', 'name': 'Grok Build', 'todayTotalTokens': 5000,
+        'limits': [{'label': 'Monthly', 'percent': 0.1}]}))
+    now = dt.datetime.now().astimezone()
+    hour = int(dt.datetime.combine(now.date(), dt.time(now.hour)).timestamp())
+    hourly = root / 'state/omarchy/ai-usage/hourly-summary.json'
+    hourly.parent.mkdir(parents=True, exist_ok=True)
+    # Claude's provider total holds every login; its own record holds 900.
+    hourly.write_text(json.dumps({
+        'schemaVersion': 1, 'date': str(now.date()), 'generatedAt': now.timestamp(),
+        'utcOffsetMinutes': int(now.utcoffset().total_seconds() // 60),
+        'availableProviders': ['claude'], 'availableSources': ['claude'],
+        'providers': {'claude': {'tokens': 2000, 'unplacedTokens': 0}},
+        'sources': {'claude': {'tokens': 900, 'unplacedTokens': 0}, 'codex': {'tokens': 0, 'unplacedTokens': 0}},
+        'hours': [{'start': hour - 3600, 'label': 'earlier', 'zone': 'X', 'providers': {'claude': 1500}, 'sources': {'claude': 400}},
+                  {'start': hour, 'label': 'now', 'zone': 'X', 'providers': {'claude': 500}, 'sources': {'claude': 500}}]}))
     pins = root / 'config/omarchy/ai-usage/pinned-limit.json'
     pins.parent.mkdir(parents=True)
     pins.write_text(json.dumps({'pins': [{'provider': 'codex', 'label': 'Weekly (7-day)', 'title': 'Weekly'},
@@ -166,7 +203,7 @@ ShellRoot {
         assert [row['percent'] for row in watched] == [0.98, 0.97, 0.59], watched
         assert [row['label'] for row in watched] == ['Model weekly', 'Weekly (7-day)', 'Monthly'], watched
         source = json.loads(ipc('source'))
-        assert source == {'label': 'SOURCE', 'value': 'all', 'text': 'All sources'}, source
+        assert source == {'label': 'ACCOUNT', 'value': 'all', 'text': 'All accounts'}, source
         header = json.loads(ipc('header'))
         assert header['pickerY'] == 0 and abs(header['buttonY'] - header['pickerY']) <= 3, header
         assert header['pickerX'] >= 3 and header['pickerWidth'] >= 120, header
@@ -199,9 +236,68 @@ ShellRoot {
         dragged = json.loads(ipc('dragScroll'))
         assert dragged['contentY'] > 0, dragged
         ipc('selectCodex')
+        selected_models = json.loads(ipc('inspect'))
+        assert len(selected_models) == 1 and selected_models[0]['total'] == 375, selected_models
         focused = json.loads(ipc('source'))
-        assert focused == {'label': 'SOURCE', 'value': 'codex', 'text': 'Main'}, focused
-        print('Offscreen panel model rows, source picker, and attached scrollbar passed')
+        assert focused == {'label': 'ACCOUNT', 'value': 'codex', 'text': 'Main'}, focused
+        credits = json.loads(ipc('credits'))
+        assert credits['visible'] and credits['remaining'] == '62,500 remaining', credits
+        assert credits['used'].startswith('1,500 used since ') and 'estimated' in credits['used'], credits
+        for snapshot, expected, visible in (({'remaining': 0, 'spent': 64000, 'trackingSince': '2026-09-30T12:00:00Z'}, '0 remaining', False),
+                                            ({'unlimited': True}, 'Unlimited credits', False),
+                                            ({'error': 'Credit balance unavailable'}, 'Balance unavailable', False),
+                                            ({'remaining': 1, 'spent': 63999, 'trackingSince': '2026-09-30T12:00:00Z'}, '1 remaining', True)):
+            credits_path.write_text(json.dumps({'codex': snapshot}))
+            for _ in range(30):
+                if json.loads(ipc('credits'))['remaining'] == expected: break
+                time.sleep(0.1)
+            current = json.loads(ipc('credits'))
+            assert current['remaining'] == expected and current['visible'] is visible, current
+        credits_path.write_text(json.dumps({'codex': {'remaining': 62500, 'spent': 1500,
+            'estimated': True, 'trackingSince': '2026-09-30T12:00:00Z'}}))
+        for _ in range(30):
+            if json.loads(ipc('credits'))['remaining'] == '62,500 remaining': break
+            time.sleep(0.1)
+        assert json.loads(ipc('credits'))['visible']
+        if args.capture_credits:
+            image_path = args.capture_credits.resolve()
+            image_path.unlink(missing_ok=True)
+            assert ipc('captureCredits', str(image_path)) == 'true'
+            for _ in range(30):
+                if image_path.exists(): break
+                time.sleep(0.1)
+            assert image_path.exists(), image_path
+            print('Captured credit section:', image_path)
+        def hourly_for(source):
+            ipc('select', source)
+            time.sleep(0.2)
+            return json.loads(ipc('hourly'))
+        everyone = hourly_for('all')
+        # All sources adds the providers, which hold every login.
+        assert everyone['total'] == 2000 and everyone['rows'] == [500, 1500], everyone
+        assert everyone['missing'].startswith('No hourly history for ') and all(
+            name in everyone['missing'] for name in ('Codex', 'Cursor', 'Grok Build')), everyone
+        # One source reads its own record, not its provider's total.
+        own = hourly_for('claude')
+        assert own['headline'] == '900 processed tokens today' and own['rows'] == [500, 400] and not own['gap'], own
+        idle = hourly_for('codex')
+        assert idle['gap'] is not None and idle['headline'] == 'Not indexed yet', idle
+        assert 'Codex' in idle['gap']['detail'] and idle['rows'] == [], idle
+        local = hourly_for('cursor')
+        assert local['headline'] == 'No hourly token history' and 'only its limits' in local['gap']['detail'], local
+        counted = hourly_for('grok')
+        assert counted['headline'] == '5,000 tokens today' and 'No hourly breakdown' in counted['gap']['detail'], counted
+        if args.capture_hourly:
+            hourly_for(args.hourly_source)
+            image_path = args.capture_hourly.resolve()
+            image_path.unlink(missing_ok=True)
+            assert ipc('captureHourly', str(image_path)) == 'true'
+            for _ in range(30):
+                if image_path.exists(): break
+                time.sleep(0.1)
+            assert image_path.exists(), image_path
+            print('Captured hourly section:', image_path)
+        print('Offscreen panel model rows, source picker, hourly section, and attached scrollbar passed')
     finally:
         proc.terminate()
         try:

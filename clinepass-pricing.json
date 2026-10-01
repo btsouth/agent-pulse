@@ -4,9 +4,10 @@
   "verifiedAt": "2026-09-18",
   "notes": [
     "Prices are per million tokens, transcribed from the ClinePass reference pricing table. ClinePass is a flat $9.99 monthly subscription, so these are API-equivalent values for the tokens the ledger recorded, never a bill.",
-    "Every key is namespaced clinepass/cline-pass/<model id>. The cline-pass/ prefix is part of the model id the API returns and the only spelling recorded in local history, so a bare model name can never pick up a rate that belongs to another route.",
+    "Every key is namespaced clinepass/cline-pass/<model id>. The cline-pass/ prefix is part of the model id the API returns and the spelling almost all of local history carries, so a bare model name cannot pick up a rate that belongs to another route.",
     "Peak pricing doubles the listed rates between 01:00-04:00 and 06:00-10:00 UTC, Monday to Friday. Cline publishes peak and off-peak figures for the two DeepSeek models only, so only those carry peak_cost_multiplier; the listed rates are the off-peak half.",
     "deepseek-v4.1-flash is served and billed by ClinePass but is absent from Cline's own model table. DeepSeek documents that name as the current Flash model, billed at the Flash price, so it carries the DeepSeek V4 Flash rates rather than staying unpriced: https://api-docs.deepseek.com/quick_start/pricing and https://www.deepseek.com/en/news/deepseek-v4-1-flash",
+    "A client writes this model under two id shapes on this route, cline-pass/deepseek-v4.1-flash and deepseek/deepseek-v4.1-flash. Both carry the same rates and neither is a bare name, so a row whose id lost the vendor prefix entirely stays unpriced rather than borrowing another route's rate.",
     "Cline lists no cached-write rate for any model but Qwen3.8 Max, Qwen3.7 Max, and Qwen3.7 Plus. Records with cache writes on the others stay unpriced rather than assuming free writes, which is what the dashboard shows as an incomplete price."
   ],
   "models": {
@@ -52,6 +53,14 @@
       "peak_weekdays_only": true
     },
     "clinepass/cline-pass/deepseek-v4.1-flash": {
+      "input_cost_per_token": 2.2e-07,
+      "output_cost_per_token": 6.6e-07,
+      "cache_read_input_token_cost": 7e-09,
+      "peak_cost_multiplier": 2,
+      "peak_hours_utc": [[1, 4], [6, 10]],
+      "peak_weekdays_only": true
+    },
+    "clinepass/deepseek/deepseek-v4.1-flash": {
       "input_cost_per_token": 2.2e-07,
       "output_cost_per_token": 6.6e-07,
       "cache_read_input_token_cost": 7e-09,

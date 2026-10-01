@@ -1,14 +1,15 @@
 {
   "source": "CommandCode published model pricing",
   "url": "https://commandcode.ai/models",
-  "verifiedAt": "2026-09-23",
+  "verifiedAt": "2026-09-30",
   "notes": [
     "Prices are per million tokens, transcribed from the CommandCode models page. These are the resale rates CommandCode bills against plan credits, which are not always the lab list prices for the same model.",
     "Every key is namespaced commandcode/<model id as the API returns it>, with a second namespaced alias for the short name, so a bare model name can never pick up a rate that belongs to another route.",
     "Peak pricing doubles the listed rates between 01:00-04:00 and 06:00-10:00 UTC, Monday to Friday. CommandCode publishes peak figures for the DeepSeek models only, so only those carry peak_cost_multiplier.",
     "laguna-s-2.1, LongCat 2.0, and Ling 3.0 Flash Sante are free while capacity lasts, so they carry zero rates rather than staying unpriced.",
     "Deal pricing already reflected in the listed figures (MiniMax M3 at 50% off, MiMo V2.5 and V2.5 Pro at 98-99% off) is transcribed as shown; rates move when deals end.",
-    "The September 23 additions use the currently published CommandCode prices; MiMo V2.6 lists no cache-write rate, so records with cache writes remain unpriced."
+    "The September 23 additions use the currently published CommandCode prices; MiMo V2.6 lists no cache-write rate, so records with cache writes remain unpriced.",
+    "DeepSeek V4.1 Flash Fast is the high-throughput V4.1 Flash: $0.16 input, $0.58 output, $0.016 cache read per million on the rates table, doubling in the peak bands. Its cache reads bill at 1.6e-08, ten times the V4.1 Flash rate, which is why the two are not aliases of each other. Checked September 30, 2026 against https://commandcode.ai/docs/resources/pricing-limits and https://commandcode.ai/models/deepseek-v4-1-flash-fast."
   ],
   "models": {
     "commandcode/gpt-6-sol": {
@@ -649,6 +650,40 @@
       "input_cost_per_token": 1.5e-07,
       "output_cost_per_token": 6e-07,
       "cache_read_input_token_cost": 3e-09,
+      "peak_cost_multiplier": 2,
+      "peak_hours_utc": [
+        [
+          1,
+          4
+        ],
+        [
+          6,
+          10
+        ]
+      ],
+      "peak_weekdays_only": true
+    },
+    "commandcode/deepseek/deepseek-v4.1-flash-fast": {
+      "input_cost_per_token": 1.6e-07,
+      "output_cost_per_token": 5.8e-07,
+      "cache_read_input_token_cost": 1.6e-08,
+      "peak_cost_multiplier": 2,
+      "peak_hours_utc": [
+        [
+          1,
+          4
+        ],
+        [
+          6,
+          10
+        ]
+      ],
+      "peak_weekdays_only": true
+    },
+    "commandcode/deepseek-v4.1-flash-fast": {
+      "input_cost_per_token": 1.6e-07,
+      "output_cost_per_token": 5.8e-07,
+      "cache_read_input_token_cost": 1.6e-08,
       "peak_cost_multiplier": 2,
       "peak_hours_utc": [
         [

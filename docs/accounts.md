@@ -18,13 +18,17 @@ An account can combine Codex, Claude, and other source folders. OpenCode and Ope
 
 A Hermes home (`~/.hermes`) carries every route Hermes bills. Choose the route it belongs to (OpenCode Go, Ollama Cloud, CommandCode, or ClinePass) when you add the folder, and add further entries for the other routes if you want them labelled; the folder itself holds one database. Put it under the account whose history it belongs to, so the two clients' usage for that account compares on one card instead of splitting across two.
 
-The account filter applies to charts, totals, and breakdowns. The Today chart colors event-timed usage by source; the daily chart shows the filtered total. The source comparison keeps each account separate, and the Accounts table compares account/source pairs and opens their recorded sessions. Renaming an account changes its label without reimporting tokens.
+Choose **Account** at the top of the dashboard. Each entry identifies one source and one account, including the main login, named folders, separate T3 Code login homes, legacy additional homes, and linked agent records. Accounts stay selectable when they have no activity in the current period. Existing named folders take precedence over automatic discovery, so adding the same home through T3 does not create another account. T3 runtimes routed to API services remain clients of that service's main account unless you explicitly assign their folders to a named account.
+
+Choose **Period** beside the account. Its totals, charts, and model breakdowns all use that scope. The account detail shows its own limits and tokens per model immediately. **View usage** beside a limit selects **Since reset** for that window. It starts at the reported reset timestamp minus the window duration, including a partial first day; monthly windows use the previous calendar month. Expired limits, unknown durations, and model-only limits do not offer a reset period. Missing reset information never turns into a guessed date range.
+
+Switching accounts clears model, project, day, hour, and source exclusions and returns to the date range selected before a reset period. **Clear filters** clears drill-downs while keeping the account and period. The secondary source selector and source exclusions apply in the All accounts view. Analytics opened from the bar follows its selected account. Renaming a named account changes its label without reimporting tokens.
 
 ## Copies and retained history
 
 Stable event IDs deduplicate copied sessions across folders. Multiple copies under the same account count once. A named copy takes precedence over an unlabelled copy. If copies of an event belong to different named accounts, the event counts once under **Needs review**, with a warning. Move the mirrored folders into the same account to resolve it. For nested configured folders, the most specific folder wins.
 
-The ledger retains previously recorded usage after source files disappear. Older records whose source cannot be recovered during migration appear as **Unassigned history**. They remain in overall totals. Removing an account label keeps its history and returns its known source paths to the local group unless another configured account matches them. Unlabelled additional folders also belong to the local group.
+The ledger retains previously recorded usage after source files disappear. Older records whose source cannot be recovered during migration appear as **Unassigned history**. They remain in overall totals. Removing an account label keeps its history; its known source paths follow any remaining named or discovered home, or return to the local group. Legacy additional folders appear as separate accounts named after their folder. To combine mirrored folders or choose a clearer label, add them to one named account.
 
 ## Synced machines
 
@@ -34,7 +38,7 @@ Snapshots carry token counters, model and project names, session ids, and timest
 
 ## Limits and comparisons
 
-History labels are not verified login identities. The local card shows the current login's quota on this PC, with its scope stated. A labelled account also shows limits when an agent usage record under `~/.local/state/omarchy/agents/usage/` has the same record id as the account, or the same name as the account label; its card says where the numbers came from. Accounts without their own record keep the current-login note. This version does not switch authentication or fetch every account's limits.
+History labels are not verified login identities. The main account keeps its current-login quota when selected. A named account shows limits when an agent usage record under `~/.local/state/omarchy/agents/usage/` has the same record id as the account, a provider-qualified id such as `codex:work`, or an unambiguous name matching the account label. The account detail states when quota or token history is unavailable. A separate agent record without a linked folder shows its limits and asks you to link history in Settings, rather than showing another login's tokens. Accounts without their own quota record never inherit the main login's limits. This version does not switch authentication or fetch every account's limits.
 
 Optional monthly prices can be set per provider (the local history group) or per labelled account. Imported, conflicting, and unassigned histories never inherit the local price. API estimates still use the same recorded costs and catalog rules in every account view.
 
