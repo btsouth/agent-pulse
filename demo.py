@@ -13,7 +13,7 @@ import time
 
 ROOT=Path(__file__).resolve().parent
 parser=argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--view', choices=['overview', 'settings', 'accounts', 'account', 'reset', 'today', 'hour', 'filters', 'sources', 'breakdown'], default='overview')
+parser.add_argument('--view', choices=['overview', 'settings', 'accounts', 'account', 'reset', 'today', 'hour', 'filters', 'sources', 'breakdown', 'collapsed'], default='overview')
 parser.add_argument('--capture',type=Path,help='render a PNG offscreen and exit')
 parser.add_argument('--theme', choices=['dark', 'light'], default='dark', help='synthetic preview palette')
 parser.add_argument('--clock-format', choices=['12', '24'], default='12', help='synthetic Omarchy bar clock format')
@@ -109,14 +109,21 @@ with tempfile.TemporaryDirectory(prefix='usage-dashboard-demo-') as tmp:
                            ['preferences'] if args.view == 'settings' else
                            ['period', '1'] if args.view == 'today' else
                            ['firstHour'] if args.view == 'hour' else
-                           ['filters'] if args.view == 'filters' else ['account', 'work'])
-                if args.view == 'sources': command = ['scrollTo', '750']
-                if args.view == 'breakdown': command = ['scrollTo', '1550']
+                           ['filters'] if args.view == 'filters' else
+                           ['overview'] if args.view == 'collapsed' else ['account', 'work'])
+                if args.view == 'sources': command = ['scrollTo', '814']
+                if args.view == 'breakdown': command = ['scrollTo', '1668']
                 if args.view == 'reset':
                     subprocess.run(['quickshell','ipc','-p',str(ui),'--any-display','call','analytics',*command],capture_output=True,text=True,env=env,check=True)
                     time.sleep(.5)
                     command = ['resetWindow', c.digest('Weekly (7-day)', '')]
                 subprocess.run(['quickshell','ipc','-p',str(ui),'--any-display','call','analytics',*command],check=True,env=env)
+                if args.view == 'collapsed':
+                    # Fold what stands between the pinned limits and the hourly
+                    # history: the two sections a screenshot usually wants in
+                    # one frame.
+                    for section in ('totals', 'accounts'):
+                        subprocess.run(['quickshell','ipc','-p',str(ui),'--any-display','call','analytics','fold',section],check=True,env=env)
                 time.sleep(0.8)
             subprocess.run(['quickshell','ipc','-p',str(ui),'--any-display','call','analytics','capture',str(output)],check=True,env=env)
             time.sleep(0.3);print(output)

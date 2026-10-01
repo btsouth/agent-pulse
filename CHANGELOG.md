@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Remove the unlabelled limit percentage from the Accounts rows on the overview. It did not say which window the figure belonged to, and it sat beside two other numbers with different meanings. Each account's own section and its limit cards still show every limit with its window name.
+- Align the Breakdown column headers with the columns they label. The header row packed at the layout's default spacing while the rows packed at 12, so TOKENS, API VALUE, and CACHE READ drifted right of the figures under them, worst at the leftmost column.
+- Fold any dashboard overview section to its header. Totals, Pinned limits, Tokens by hour, Accounts, the selected account's limits and models, Cache and output, Breakdown, and the yearly activity map each collapse to a single line that keeps its headline figure, and the choice survives reopening the window. Folding is a view preference: it is remembered in `view-state.json` beside the other analytics preferences, and the bar panel is unaffected. `demo.py --view collapsed` renders the folded view.
+
 - Fix the bar panel saying "No indexed token history for this source" for labelled second logins such as Claude Second, Claude Third, and ChatGPT Second. Their history was indexed all along, but the hourly snapshot only knew providers. It now keeps totals for each source in the panel, so those sources show their own hours and tokens today, and Main no longer includes its second logins' usage. All sources still counts every login once.
 - Rewrite the panel's message for a source with no indexed history. It now says why: the source keeps no local logs, or it has not been indexed yet and its history folder can be added in Settings. It shows the token count from the source's own usage record when there is one. A source with history but nothing today reads "No tokens processed today", and All sources names the sources without hourly history instead of counting them.
 
