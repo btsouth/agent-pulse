@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.9.0 - 2026-09-30
 
 - Price every model released since the last snapshot. The bundled LiteLLM catalog is refreshed to its current revision, which adds Claude Sonnet 5.5, Claude Opus 5.5, GPT-6 Sol, Luna, and 6.1 Sol, and the models the Gemini and image routes have gained. A refresh keeps an entry that upstream has since dropped, because a dropped rate would turn already recorded usage into unpriced tokens long after the fact; `tools/update_catalog.py` now prints what it added and which base rates changed, and takes `--drop-removed` to mirror upstream exactly.
 - Refresh the OpenCode Go table from its own documentation: add MiMo V2.6 Flash and Pro, Grok 4.7, and GPT-6 Luna, and correct DeepSeek V4.1 Flash's monthly allowance, which the docs now put at $60 rather than $15.
