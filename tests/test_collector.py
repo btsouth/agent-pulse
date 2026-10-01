@@ -1030,6 +1030,22 @@ class CollectorTests(unittest.TestCase):
         self.assertAlmostEqual(peak, off_peak * 2, places=9)
         self.assertAlmostEqual(weekend, off_peak, places=9)
 
+    def test_commandcode_deepseek_v4_1_flash_fast_is_priced(self):
+        # The route's own table prices it below the v4 Flash Fast rates, and its
+        # cache reads bill far above the non-fast V4.1 Flash ones.
+        with patch.object(c, 'STATE', self.root):
+            rates = c.load_rates()['document']
+        def value(ts):
+            rec = c.record('x', 'commandcode', 's', ts, 'deepseek/deepseek-v4.1-flash-fast', '/p', 'Hermes',
+                           input=1_000_000, output=1_000_000, cacheRead=1_000_000)
+            return c.price(rec, rates)
+        off_peak, saving = value('2026-09-08T15:00:00Z')
+        self.assertIsNotNone(off_peak, 'the route prices this model instead of leaving it unpriced')
+        self.assertAlmostEqual(off_peak, 0.16 + 0.58 + 0.016, places=9)
+        self.assertAlmostEqual(saving, 0.16 - 0.016, places=9)
+        self.assertAlmostEqual(value('2026-09-08T02:00:00Z')[0], off_peak * 2, places=9)
+        self.assertAlmostEqual(value('2026-09-12T02:00:00Z')[0], off_peak, places=9)
+
     def test_internal_codex_model_is_zero_and_not_unpriced(self):
         with patch.object(c, 'STATE', self.root):
             rates = c.load_rates()['document']
@@ -2116,6 +2132,9 @@ class CollectorTests(unittest.TestCase):
         # silently priced at another route's rate or at zero.
         prefixless, _ = c.price(dict(row, model='deepseek-v4.1-flash'), rates)
         self.assertIsNone(prefixless)
+        # Some clients write the id with the model vendor's own prefix instead.
+        # That shape is still a namespaced id, so the route's own rate applies.
+        self.assertAlmostEqual(c.price(dict(row, model='deepseek/deepseek-v4.1-flash'), rates)[0], 0.22, places=6)
 
     def test_clinepass_pricing_charges_the_peak_window(self):
         rates = c.load_rates()['document']
