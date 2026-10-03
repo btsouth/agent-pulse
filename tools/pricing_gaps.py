@@ -57,13 +57,17 @@ def recorded():
     database = sqlite3.connect(f"file:{c.STATE / 'usage.sqlite'}?mode=ro", uri=True)
     database.row_factory = sqlite3.Row
     since = int(time.time()) - args.days * 86400
+    # A speed tier prices from its own rates, so a missing Fast rate is a gap of
+    # its own. A ledger not yet scanned by this version has no tier columns.
+    columns = {row[1] for row in database.execute('PRAGMA table_info(events)')}
+    tier = 'COALESCE(serviceTier, requestedServiceTier)' if 'requestedServiceTier' in columns else 'NULL'
     return database.execute(
-        "SELECT provider, COALESCE(apiProvider,'') apiProvider, model,"
+        f"SELECT provider, COALESCE(apiProvider,'') apiProvider, model, {tier} serviceTier,"
         " SUM(input) input, SUM(output) output, SUM(cacheRead) cacheRead, SUM(cacheWrite) cacheWrite,"
         " SUM(cacheWrite1h) cacheWrite1h, SUM(reasoning) reasoning, SUM(reportedCostTicks) reportedCostTicks,"
         " SUM(reportedValue) reportedValue, SUM(modelCalls) modelCalls, SUM(turns) turns,"
         " COUNT(*) records, MAX(ts) ts, SUM(input+output+cacheRead+cacheWrite) tokens"
-        " FROM events WHERE ts>=? AND model<>'' GROUP BY provider, apiProvider, model"
+        f" FROM events WHERE ts>=? AND model<>'' GROUP BY provider, apiProvider, model, {tier}"
         " ORDER BY tokens DESC", (since,))
 
 def owns(provider):
@@ -72,6 +76,9 @@ def owns(provider):
 def hint(record, rates, upstream):
     """Why a row is unpriced, in the terms of the table that would fix it."""
     provider, model = record['provider'], record['model']
+    tier = record.get('serviceTier')
+    if tier and c.price(record | {'serviceTier': None}, rates)[0] is not None:
+        return f'no published {tier} tier rate for this model: add its _{tier} rates or leave it unpriced'
     if '/' not in model:
         # A resale table keys rows by the id the route returns, so a short id is
         # a different key rather than a missing rate.
@@ -105,7 +112,7 @@ def main():
             hidden += 1
             continue
         table, step = owns(record['provider'])
-        found.append({'provider': record['provider'], 'model': record['model'],
+        found.append({'provider': record['provider'], 'model': record['model'], 'tier': record['serviceTier'],
                       'tokens': record['tokens'], 'records': record['records'],
                       'lastSeen': record['ts'], 'table': table, 'refresh': step,
                       'hint': hint(record, rates, upstream)})
@@ -115,7 +122,7 @@ def main():
         # Stable output for a watcher: the set of gaps, without counts or dates,
         # which move every day and would read as a change every tick.
         for gap in sorted(found, key=lambda entry: (entry['provider'], entry['model'])):
-            print(f"{gap['provider']}/{gap['model']}")
+            print(f"{gap['provider']}/{gap['model']}" + (f" ({gap['tier']})" if gap['tier'] else ''))
         return
     if args.json:
         print(json.dumps({'days': args.days, 'gaps': found, 'hiddenByDisabledSources': hidden}, indent=2))
@@ -127,7 +134,7 @@ def main():
         return
     print(f'{len(found)} unpriced model(s) in the last {args.days} days, worst first:\n')
     for gap in found:
-        print(f"  {gap['model']} on {gap['provider']}")
+        print(f"  {gap['model']} on {gap['provider']}" + (f" at the {gap['tier']} tier" if gap['tier'] else ''))
         print(f"    {gap['tokens']:,} tokens over {gap['records']} record(s), last seen {time.strftime('%Y-%m-%d', time.localtime(gap['lastSeen']))}")
         print(f"    table: {gap['table']}")
         print(f"    step:  {gap['refresh']}")
