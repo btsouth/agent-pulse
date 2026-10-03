@@ -156,6 +156,10 @@ class RecoveryTests(unittest.TestCase):
                     'total_token_usage':{'input_tokens':100,'output_tokens':20}}}})+'\n')
             subprocess.run(['python3',str(ROOT/'install.py'),'--with-plugin','--no-systemd'],env=env,check=True,capture_output=True)
             runtime=Path(env['XDG_DATA_HOME'])/APP/'app'
+            # This installed-process fixture must not ask the real GitHub API.
+            prefs=Path(env['XDG_CONFIG_HOME'])/'omarchy/ai-usage/settings.json'
+            prefs.parent.mkdir(parents=True,exist_ok=True)
+            prefs.write_text(json.dumps({'enabled':['codex'],'updateCheck':False}))
             for _ in range(2):
                 subprocess.run([str(home/'.local/bin'/f'{APP}-refresh'),'--force'],env=env,check=True,capture_output=True)
                 result=subprocess.run(['python3',str(runtime/'collector.py'),'report'],env=env,check=True,capture_output=True,text=True)

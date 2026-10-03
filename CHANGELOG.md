@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.10.0 - 2026-10-03
 
 - Show a daily GitHub release notice in the dashboard and bar panel with a command to update to that release, preserving history, preferences and the installed widget. Disable checks in Settings → Updates.
 
