@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Show a daily GitHub release notice in the dashboard and bar panel with a command to update to that release, preserving history, preferences and the installed widget. Disable checks in Settings → Updates.
+
 ## 1.9.0 - 2026-09-30
 
 - Price every model released since the last snapshot. The bundled LiteLLM catalog is refreshed to its current revision, which adds Claude Sonnet 5.5, Claude Opus 5.5, GPT-6 Sol, Luna, and 6.1 Sol, and the models the Gemini and image routes have gained. A refresh keeps an entry that upstream has since dropped, because a dropped rate would turn already recorded usage into unpriced tokens long after the fact; `tools/update_catalog.py` now prints what it added and which base rates changed, and takes `--drop-removed` to mirror upstream exactly.

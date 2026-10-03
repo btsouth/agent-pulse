@@ -85,7 +85,12 @@ API_KEY_FIELDS = ('ollamaApiKey', 'commandcodeApiKey', 'clinepassApiKey')
 DEFAULTS = {'enabled': ['codex', 'claude', 'opencode-go'], 'monthlyPrices': {},
             **{key: [] for key in HOME_KEYS}, 'accounts': [], 'localAccountLabel': 'Local', 'windowOpacity': 0.985,
             'ledgerSyncDir': '', 'ledgerDeviceId': '', 'ollamaApiKey': '', 'commandcodeApiKey': '',
-            'clinepassApiKey': ''}
+            'clinepassApiKey': '', 'updateCheck': True}
+# The update notice asks GitHub for the latest release once a day. It sends
+# no usage data and can be switched off in Settings.
+RELEASE_URL = 'https://api.github.com/repos/btsouth/omarchy-usage-dashboard/releases/latest'
+INSTALL_URL = 'https://raw.githubusercontent.com/btsouth/omarchy-usage-dashboard/main/install.sh'
+PLUGIN_ID = 'community.ai-usage-dashboard'
 FIELDS = ('input', 'output', 'cacheRead', 'cacheWrite', 'cacheWrite1h', 'reasoning')
 # Bundled official rate tables merged over the catalog, in order. User
 # rates.json entries still win over every file listed here.
@@ -290,6 +295,52 @@ def theme():
     return {'palette': palette, 'shell': shell, 'font': font}
 
 
+def installed_version():
+    try: return (Path(__file__).resolve().parent / 'VERSION').read_text().strip()
+    except OSError: return ''
+
+
+def version_key(value):
+    """1.10.0 sorts after 1.9.2. Anything that is not dotted numbers has no
+    key, so an unexpected tag never claims to be an update."""
+    match = re.fullmatch(r'v?(\d+(?:\.\d+)*)', str(value or '').strip())
+    return tuple(int(part) for part in match.group(1).split('.')) if match else ()
+
+
+def check_update(cfg, force=False):
+    """Ask GitHub for the latest release, at most once a day. A failed
+    request keeps the last answer and is not retried until the next day."""
+    path = STATE / 'update.json'
+    if not cfg.get('updateCheck', True) or not installed_version(): return
+    try: cached = json.loads(path.read_text())
+    except (OSError, ValueError): cached = {}
+    if not isinstance(cached, dict): cached = {}
+    attempted = cached.get('attemptedAt', 0)
+    if not isinstance(attempted, (int, float)): attempted = 0
+    if not force and 0 <= time.time() - attempted < 86400: return
+    cached['attemptedAt'] = time.time()
+    try:
+        request = urllib.request.Request(RELEASE_URL, headers={'Accept': 'application/vnd.github+json',
+                                                               'User-Agent': 'Agent-Pulse/' + installed_version()})
+        with urllib.request.urlopen(request, timeout=8) as response: data = json.load(response)
+        tag = str(data.get('tag_name') or '') if isinstance(data, dict) else ''
+        if version_key(tag): cached['latest'] = tag.lstrip('v')
+    except (OSError, ValueError): pass
+    atomic_json(path, cached)
+
+
+def update_status(cfg):
+    """What the UI shows. Reads the last check only; never touches the network."""
+    current = installed_version()
+    try: latest = str(json.loads((STATE / 'update.json').read_text()).get('latest') or '')
+    except (OSError, ValueError, AttributeError): latest = ''
+    available = bool(cfg.get('updateCheck', True) and version_key(current) and version_key(latest) > version_key(current))
+    plugin = (CONFIG.parents[1] / 'plugins' / PLUGIN_ID / 'manifest.json').exists()
+    return {'current': current, 'latest': latest if available else '', 'available': available,
+            'command': 'curl -fsSL %s | OMARCHY_USAGE_REF=v%s bash%s' %
+                (INSTALL_URL, latest if available else current, ' -s -- --with-plugin' if plugin else '')}
+
+
 def masked_settings(cfg):
     """A copy of the settings safe to hand to the UI: any stored key is
     replaced by a mask. Derived from the key fields rather than written out at
@@ -343,7 +394,9 @@ def save_settings(value):
              'accounts': [], 'localAccountLabel': str(value.get('localAccountLabel') or 'Local').strip(),
              'ledgerSyncDir': '', 'ledgerDeviceId': str(value.get('ledgerDeviceId') or '').strip(),
              **{field: str(value.get(field) or '').strip() for field in API_KEY_FIELDS},
-             'windowOpacity': max(0.55, min(1.0, opacity))}
+             'windowOpacity': max(0.55, min(1.0, opacity)),
+             # A client that does not send the field leaves the choice alone.
+             'updateCheck': bool(value['updateCheck']) if 'updateCheck' in value else bool(settings().get('updateCheck', True))}
     # The user's own key beats the environment and the key file, since typing
     # one in is deliberate. Settings stay nonsecret by default; these values
     # are the exception and are never echoed back over the settings channel.
@@ -2157,7 +2210,8 @@ def hourly_snapshot(ledger, now=None, cfg=None):
             # Local tokens in each record's current limit windows, keyed by
             # record id. The panel matches them to its limits by label and
             # reset time, so a window that has since rolled over shows none.
-            'limitTokens': limit_tokens_by_record(ledger, cfg, now)}
+            'limitTokens': limit_tokens_by_record(ledger, cfg, now),
+            'update': update_status(cfg)}
 
 
 def limit_tokens_by_record(ledger, cfg, now=None):
@@ -2460,7 +2514,7 @@ def report(ledger, cfg, days=7, provider='all', now=None, selection=None):
             # Reports reach the bar panel and the dashboard window. The key
             # comes back masked so the settings form can show that one is
             # stored without echoing it.
-            'settings': masked_settings(saved_cfg), 'theme': theme()}
+            'settings': masked_settings(saved_cfg), 'theme': theme(), 'update': update_status(saved_cfg)}
 
 
 def write_agent_record(ledger, provider):
@@ -2557,6 +2611,7 @@ def main():
             if os.getenv('AI_USAGE_DEMO') != '1' and cursor_token(): found.add('cursor')
             cfg = cfg | {'enabled': list(dict.fromkeys(cfg['enabled'] + [p for p in PROVIDERS if p in found]))}
         if args.action == 'scan':
+            if os.getenv('AI_USAGE_DEMO') != '1': check_update(cfg)
             ledger.scan(cfg, force=args.force)
             atomic_json(STATE / 'hourly-summary.json', hourly_snapshot(ledger, cfg=cfg))
             if not CONFIG.exists():
