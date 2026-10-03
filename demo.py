@@ -72,6 +72,9 @@ with tempfile.TemporaryDirectory(prefix='usage-dashboard-demo-') as tmp:
                     entry['reportedValue'] = round((entry['input'] + entry['output']) * 0.00001, 6)
                 if provider in ('ollama-cloud', 'commandcode', 'clinepass'):
                     entry['timePrecision'] = 'session'
+                if provider == 'codex':
+                    # Fast, Standard, and unrecorded speeds in one session.
+                    entry['requestedServiceTier'] = ('priority', 'default', None)[index % 3]
                 ledger.put(entry, base/('work' if index % 2 else 'local')/provider/'sessions/demo.jsonl')
     ledger.db.execute("UPDATE events SET reportedCostTicks=120000000,modelCalls=3 WHERE provider='grok'")
     ledger.db.execute("UPDATE events SET reportedValue=0.012,apiProvider='example-provider' WHERE provider IN ('opencode','pi','omp')")

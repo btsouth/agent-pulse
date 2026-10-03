@@ -92,6 +92,10 @@ RELEASE_URL = 'https://api.github.com/repos/btsouth/omarchy-usage-dashboard/rele
 INSTALL_URL = 'https://raw.githubusercontent.com/btsouth/omarchy-usage-dashboard/main/install.sh'
 PLUGIN_ID = 'community.ai-usage-dashboard'
 FIELDS = ('input', 'output', 'cacheRead', 'cacheWrite', 'cacheWrite1h', 'reasoning')
+# OpenAI service tiers by the names its responses and the pricing catalog use.
+# Fast mode is the renamed priority tier and either request spelling selects it.
+SERVICE_TIERS = {'priority': 'priority', 'fast': 'priority', 'default': 'default', 'standard': 'default',
+                 'flex': 'flex', 'ultrafast': 'ultrafast', 'scale': 'scale'}
 # Bundled official rate tables merged over the catalog, in order. User
 # rates.json entries still win over every file listed here.
 OVERRIDES = (('pricing.json', 'OpenCode Go official rates'),
@@ -472,11 +476,22 @@ def record(key, provider, session, ts, model, project, client, **tokens):
             **{f: number(tokens.get(f)) for f in FIELDS}}
 
 
+def service_tier(value):
+    # Auto, an empty value, or an unrecognised spelling records no tier.
+    return SERVICE_TIERS.get(str(value or '').strip().casefold())
+
+
 def codex_records(path, provider='codex'):
     session, project, client, model = path.stem, '', 'CLI', 'unknown'
     started = 0
     seen = set()
     have_metadata = False
+    # Codex records the speed each turn asked for in a full thread-settings
+    # snapshot. It does not record the tier the server actually used. A
+    # snapshot takes effect for the requests after it; one that changes the
+    # tier after a turn has produced usage leaves the rest of that turn
+    # unknown, because the change may only apply from the next turn.
+    route, tier, pending, turn_usage = 'openai', None, (), 0
     with path.open(errors='replace') as f:
         for raw in f:
             try: item = json.loads(raw)
@@ -494,7 +509,21 @@ def codex_records(path, provider='codex'):
                 originator = str(p.get('originator') or '').casefold()
                 client = 'T3 Code' if 't3code' in originator else 'Desktop' if 'desktop' in originator else 'CLI'
                 provider = CODEX_ROUTE_PROVIDERS.get(provider_key(p.get('model_provider')), provider)
+                route = provider_key(p.get('model_provider')) or route
                 started = timestamp(p.get('timestamp'))
+            elif kind == 'event_msg' and p.get('type') == 'task_started':
+                if started and timestamp(item.get('timestamp')) < started: continue
+                if pending != (): tier, pending = pending[0], ()
+                turn_usage = 0
+            elif kind == 'event_msg' and p.get('type') == 'thread_settings_applied':
+                ts = timestamp(item.get('timestamp'))
+                settings = p.get('thread_settings')
+                if not isinstance(settings, dict) or (started and ts and ts < started): continue
+                # Only OpenAI's own API has these tiers; another model provider's
+                # route is not billed by them.
+                value = service_tier(settings.get('service_tier')) if (provider_key(settings.get('model_provider_id')) or route) == 'openai' else None
+                if not turn_usage: tier, pending = value, ()
+                elif value != tier: tier, pending = None, (value,)
             elif kind == 'turn_context':
                 model = p.get('model') or p.get('model_slug') or model
                 project = p.get('cwd') or project
@@ -509,11 +538,12 @@ def codex_records(path, provider='codex'):
                 fingerprint = digest(total) if total else digest(ts, u)
                 if fingerprint in seen: continue
                 seen.add(fingerprint)
+                turn_usage += 1
                 read, write = number(u.get('cached_input_tokens')), number(u.get('cache_write_input_tokens'))
                 yield record(digest('codex', session, fingerprint), provider, session, ts, model,
                              project, client, input=max(0, number(u.get('input_tokens')) - read - write),
                              output=u.get('output_tokens'), cacheRead=read, cacheWrite=write,
-                             reasoning=u.get('reasoning_output_tokens'))
+                             reasoning=u.get('reasoning_output_tokens')) | {'requestedServiceTier': tier}
 
 
 def claude_records(path, provider='claude'):
@@ -1027,6 +1057,15 @@ class Ledger:
             if name not in columns: self.db.execute(f'ALTER TABLE events ADD COLUMN {name} {kind}')
         if 'timePrecision' not in columns:
             self.db.execute('ALTER TABLE events ADD COLUMN timePrecision TEXT')
+        # The tier the server reports it used, and the tier the client asked for.
+        for name in ('serviceTier', 'requestedServiceTier'):
+            if name not in columns: self.db.execute(f'ALTER TABLE events ADD COLUMN {name} TEXT')
+        if not self.db.execute("SELECT 1 FROM metadata WHERE key='serviceTierVersion'").fetchone():
+            # Re-read Codex rollouts once so retained events gain the tier their
+            # transcript recorded. Events are upserted by id, so token totals do
+            # not change, and events whose transcript is gone keep no tier.
+            self.db.execute("DELETE FROM files WHERE path LIKE '%rollout-%.jsonl'")
+            self.db.execute("INSERT INTO metadata VALUES ('serviceTierVersion','1')")
 
     def put(self, r, source=None, growing=False):
         if not r['ts'] or (not sum(r[f] for f in FIELDS[:4]) and not r.get('turns')): return
@@ -1042,6 +1081,8 @@ class Ledger:
         update += ",reportedValue=CASE WHEN excluded.provider='cursor' THEN excluded.reportedValue ELSE COALESCE(MAX(COALESCE(events.reportedValue,0),excluded.reportedValue),events.reportedValue) END"
         update += ',apiProvider=COALESCE(excluded.apiProvider,events.apiProvider)'
         update += ',timePrecision=COALESCE(excluded.timePrecision,events.timePrecision)'
+        update += ',serviceTier=COALESCE(excluded.serviceTier,events.serviceTier)'
+        update += ',requestedServiceTier=COALESCE(excluded.requestedServiceTier,events.requestedServiceTier)'
         self.db.execute(f'INSERT INTO events ({",".join(keys)}) VALUES ({",".join("?" for _ in keys)}) '
                         f'ON CONFLICT(id) DO UPDATE SET {update}', list(r.values()))
         if source is not None:
@@ -1298,15 +1339,37 @@ def peak_rate(rate, ts):
             for key, value in rate.items()}
 
 
+def record_tier(r):
+    """The tier a record is valued at and the evidence behind it.
+
+    The served tier wins over the requested one, since a Fast request the
+    server downgrades is billed at Standard. Neither recorded gives (None, None).
+    """
+    if r.get('serviceTier'): return r['serviceTier'], 'served'
+    if r.get('requestedServiceTier'): return r['requestedServiceTier'], 'requested'
+    return None, None
+
+
 def price(r, catalog):
+    return price_detail(r, catalog)[:2]
+
+
+def price_detail(r, catalog):
+    """(value, cache savings, (tier, basis)) for one record.
+
+    basis is 'served' or 'requested' when a recorded tier chose the rates,
+    'assumed' when the model has tier rates but the record names no tier and
+    Standard rates were used, and None when tiers did not enter the price.
+    """
+    untiered = (None, None)
     if r['provider'] == 'grok':
         ticks = r.get('reportedCostTicks')
-        return (ticks / 10_000_000_000, None) if ticks else (None, None)
-    if r['provider'] == 'cursor': return r.get('reportedValue'), None
+        return ((ticks / 10_000_000_000, None) if ticks else (None, None)) + (untiered,)
+    if r['provider'] == 'cursor': return r.get('reportedValue'), None, untiered
     if r['provider'] in ('opencode', 'pi', 'omp') and r.get('reportedValue') is not None:
-        return r['reportedValue'], None
+        return r['reportedValue'], None, untiered
     fallback = r.get('reportedValue') if r['provider'] == 'opencode-go' else None
-    fallback = (fallback, None) if fallback is not None else (None, None)
+    fallback = (fallback, None, untiered) if fallback is not None else (None, None, untiered)
     model = r['model']
     lookup = (r.get('apiProvider') or r['provider']) + '/' + model
     # CommandCode bills one resale table for the whole product, so both of its
@@ -1319,13 +1382,22 @@ def price(r, catalog):
         rate = catalog.get(model) or catalog.get('anthropic/' + model) or catalog.get('openai/' + model) or catalog.get('gemini/' + model)
     if not rate: return fallback
     # Internal models have no published rate and are not billed per token.
-    if rate.get('internal'): return 0.0, None
+    if rate.get('internal'): return 0.0, None, untiered
     rate = peak_rate(rate, r['ts'])
     context = r['input'] + r['cacheRead'] + r['cacheWrite']
     suffix = ''
     for threshold, candidate in [(200000, '_above_200k_tokens'), (256000, '_above_256k_tokens'), (272000, '_above_272k_tokens')]:
         if context > threshold and 'input_cost_per_token' + candidate in rate: suffix = candidate
-    def cost(key, fallback=None): return rate.get(key + suffix, rate.get(key, fallback))
+    tier, basis = record_tier(r)
+    if tier is None and 'input_cost_per_token_priority' in rate: basis = 'assumed'
+    # Standard is the unsuffixed rate. Any other tier reads the catalog's
+    # tier-suffixed rate for the same context band; a tier with no published
+    # rate leaves the record unpriced rather than borrowing Standard.
+    tag = '' if tier in (None, 'default') else '_' + tier
+    def cost(key, fallback=None):
+        if not tag: return rate.get(key + suffix, rate.get(key, fallback))
+        if key + suffix + tag in rate or key + suffix not in rate: return rate.get(key + suffix + tag, rate.get(key + tag))
+        return None
     inp, out = cost('input_cost_per_token'), cost('output_cost_per_token')
     read = cost('cache_read_input_token_cost')
     write = cost('cache_creation_input_token_cost')
@@ -1335,22 +1407,29 @@ def price(r, catalog):
     if any(n and not isinstance(v, (int, float)) for n, v in parts): return fallback
     value = sum(n * (v or 0) for n, v in parts)
     saving = max(0, r['cacheRead'] * ((inp or 0) - (read or 0)))
-    return value, saving
+    return value, saving, (tier, basis)
 
 
 def bucket():
     return {**{f: 0 for f in FIELDS}, 'tokens': 0, 'value': 0.0, 'cacheSavings': 0.0,
-            'unpricedTokens': 0, 'requests': 0, 'modelCalls': 0, 'turns': 0, 'sessions': set()}
+            'unpricedTokens': 0, 'requests': 0, 'modelCalls': 0, 'turns': 0, 'sessions': set(),
+            'fastTokens': 0, 'tierServedTokens': 0, 'tierRequestedTokens': 0, 'tierAssumedTokens': 0}
 
 
-def add(b, r, value, savings):
+def add(b, r, value, savings, tier=(None, None)):
     for f in FIELDS: b[f] += r[f]
     total = sum(r[f] for f in FIELDS[:4])
     b['tokens'] += total; b['requests'] += 1; b['sessions'].add(r['provider'] + ':' + r['session'])
     b['modelCalls'] += r.get('modelCalls') or 0
     b['turns'] += r.get('turns') or 0
     if value is None: b['unpricedTokens'] += total
-    else: b['value'] += value; b['cacheSavings'] += savings or 0
+    else:
+        b['value'] += value; b['cacheSavings'] += savings or 0
+        # Priced tokens by the evidence behind their tier, so a view can say
+        # how much of its estimate rests on a recorded speed.
+        name, basis = tier
+        if basis: b['tier' + basis.capitalize() + 'Tokens'] += total
+        if name == 'priority': b['fastTokens'] += total
 
 
 def finish(b):
@@ -2317,14 +2396,14 @@ def report(ledger, cfg, days=7, provider='all', now=None, selection=None):
             model_options[family_name] = model_options.get(family_name, 0) + sum(r[f] for f in FIELDS[:4])
         if not selected(r, selection, p): continue
         if selected_hour is None and previous_start <= r['ts'] < previous_end and (not previous_date or day == str(previous_date)):
-            value, savings = price(r, rates['document'])
-            add(previous, r, value, savings)
+            value, savings, tier = price_detail(r, rates['document'])
+            add(previous, r, value, savings, tier)
         if selected_date and day != str(selected_date): continue
         if selected_hour is not None and (not timed_event(r) or not selected_hour <= r['ts'] < selected_hour + 3600): continue
         if not heatmap_fast: heatmap[day] += sum(r[f] for f in FIELDS[:4])
-        value, savings = price(r, rates['document'])
+        value, savings, tier = price_detail(r, rates['document'])
         if r['ts'] < start: continue
-        add(summary, r, value, savings); add(providers[p], r, value, savings)
+        add(summary, r, value, savings, tier); add(providers[p], r, value, savings, tier)
         provider_accounts[p].add(account)
         card_id = p + ':' + account
         model_entry = card_models_agg.setdefault(card_id, {}).setdefault(r['model'],
@@ -2334,27 +2413,27 @@ def report(ledger, cfg, days=7, provider='all', now=None, selection=None):
         if value is None: model_entry['unpriced'] += model_tokens
         else: model_entry['value'] += value
         if day in daily:
-            add(daily[day]['total'], r, value, savings)
-            add(daily[day]['providers'][p], r, value, savings)
+            add(daily[day]['total'], r, value, savings, tier)
+            add(daily[day]['providers'][p], r, value, savings, tier)
             card_bucket = daily[day]['cards'].get(card_id)
             if card_bucket is None:
                 card_bucket = daily[day]['cards'][card_id] = bucket()
-            add(card_bucket, r, value, savings)
+            add(card_bucket, r, value, savings, tier)
         if hourly:
             index = int((r['ts'] - hour_start) // 3600)
             if not timed_event(r):
-                add(hourly_unplaced, r, value, savings)
+                add(hourly_unplaced, r, value, savings, tier)
                 unplaced_bucket = unplaced_providers.get(p)
                 if unplaced_bucket is None:
                     unplaced_bucket = unplaced_providers[p] = bucket()
-                add(unplaced_bucket, r, value, savings)
+                add(unplaced_bucket, r, value, savings, tier)
             elif 0 <= index < len(hourly):
-                add(hourly[index]['total'], r, value, savings)
-                add(hourly[index]['providers'][p], r, value, savings)
+                add(hourly[index]['total'], r, value, savings, tier)
+                add(hourly[index]['providers'][p], r, value, savings, tier)
                 card_bucket = hourly[index]['cards'].get(card_id)
                 if card_bucket is None:
                     card_bucket = hourly[index]['cards'][card_id] = bucket()
-                add(card_bucket, r, value, savings)
+                add(card_bucket, r, value, savings, tier)
         if value is None:
             # Pricing coverage stays keyed by route and by the exact recorded
             # spelling, because that pair is what names the rate table that has
@@ -2365,7 +2444,7 @@ def report(ledger, cfg, days=7, provider='all', now=None, selection=None):
             missing_bucket = unpriced.get(missing_key)
             if missing_bucket is None:
                 missing_bucket = unpriced[missing_key] = bucket()
-            add(missing_bucket, r, value, savings)
+            add(missing_bucket, r, value, savings, tier)
         # The Models breakdown is keyed by family rather than by provider, so one
         # model is one row across routes, and it keeps its own per-route detail.
         # Every route's value is still priced by that route's own rate table in
@@ -2375,13 +2454,13 @@ def report(ledger, cfg, days=7, provider='all', now=None, selection=None):
         model_bucket = models.get(family)
         if model_bucket is None:
             model_bucket = models[family] = bucket()
-        add(model_bucket, r, value, savings)
+        add(model_bucket, r, value, savings, tier)
         family_routes = model_routes.setdefault(family, {})
         route = family_routes.get(p)
         if route is None:
             route = family_routes[p] = {'models': set(), 'bucket': bucket()}
         route['models'].add(r['model'])
-        add(route['bucket'], r, value, savings)
+        add(route['bucket'], r, value, savings, tier)
         # Every other breakdown stays keyed by provider, as it always was.
         for group, key in [(projects, (p, r['project'] or 'Unknown project')),
                            (clients, (p, r['client'])), (sessions, (p, r['session'])),
@@ -2389,7 +2468,7 @@ def report(ledger, cfg, days=7, provider='all', now=None, selection=None):
             b = group.get(key)
             if b is None:
                 b = group[key] = bucket()
-            add(b, r, value, savings)
+            add(b, r, value, savings, tier)
             if group is sessions:
                 b['project'] = r['project'] or 'Unknown project'
                 b['client'] = r['client']
