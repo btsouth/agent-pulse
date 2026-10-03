@@ -1150,10 +1150,19 @@ class Ledger:
             columns = {row[1] for row in conn.execute('PRAGMA table_info(events)')}
             if not {'id', 'provider', 'session', 'ts', 'model', 'project', 'client', *FIELDS} <= columns:
                 raise ValueError('Not a usage ledger')
-            for row in conn.execute('SELECT * FROM events'):
-                self.put({key: row[key] for key in row.keys() if key in ours}, None)
             try: sources = list(conn.execute('SELECT event_id,path FROM event_sources'))
             except sqlite3.Error: sources = []
+            native_events = {event for event, original in sources if not original.startswith('machine:')}
+            for row in conn.execute('SELECT * FROM events'):
+                entry = {key: row[key] for key in row.keys() if key in ours}
+                # A peer can seed a new event, but only the machine with the
+                # transcript can correct its speed. Re-exported copies may be
+                # stale, including after the owner explicitly cleared a tier.
+                if row['id'] not in native_events and self.db.execute(
+                        'SELECT 1 FROM events WHERE id=?', (row['id'],)).fetchone():
+                    entry.pop('serviceTier', None)
+                    entry.pop('requestedServiceTier', None)
+                self.put(entry, None)
             for event, original in sources:
                 # Keep one provenance per event so imported copies cannot
                 # conflict with a local account or another machine.

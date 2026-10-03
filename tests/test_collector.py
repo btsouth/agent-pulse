@@ -1320,6 +1320,28 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(owner.db.execute('SELECT requestedServiceTier FROM events').fetchone(), (None,))
         owner.db.close(); peer.db.close()
 
+    def test_stale_peer_cannot_undo_owner_tier_correction(self):
+        sync = self.root / 'three-machine-sync'
+        owner = c.Ledger(self.root / 'owner.sqlite')
+        peer = c.Ledger(self.root / 'peer.sqlite')
+        third = c.Ledger(self.root / 'third.sqlite')
+        row = c.record('shared-tier', 'codex', 'session', '2026-09-04T12:00:00Z',
+                       'gpt-6.1-sol', '/p', 'CLI', input=100, cacheRead=1000)
+        def cfg(device): return c.DEFAULTS | {'ledgerSyncDir': str(sync), 'ledgerDeviceId': device}
+        owner.put(row | {'requestedServiceTier': 'priority'}, str(self.root / 'owner-rollout.jsonl'))
+        owner.db.commit(); owner.sync_ledgers(cfg('a-owner'))
+        peer.sync_ledgers(cfg('z-peer'))
+        peer.sync_ledgers(cfg('z-peer'))  # Re-export the owner's original Fast evidence.
+        for tier in ['default', None]:
+            owner.put(row | {'requestedServiceTier': tier}, str(self.root / 'owner-rollout.jsonl'))
+            owner.db.commit(); owner.sync_ledgers(cfg('a-owner'))
+            # Sorted import sees the owner's correction before the stale peer.
+            third.sync_ledgers(cfg('third'))
+            third.sync_ledgers(cfg('third'))
+            self.assertEqual(third.db.execute('SELECT requestedServiceTier FROM events').fetchone(), (tier,))
+            self.assertEqual(third.db.execute('SELECT COUNT(*),SUM(input+cacheRead+output) FROM events').fetchone(), (1, 1100))
+        owner.db.close(); peer.db.close(); third.db.close()
+
     def test_tier_migration_reindexes_preview_and_invalidates_snapshot(self):
         path = self.root / 'preview.sqlite'
         ledger = c.Ledger(path)
