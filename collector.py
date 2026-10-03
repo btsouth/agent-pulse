@@ -523,7 +523,7 @@ def codex_records(path, provider='codex'):
                 # route is not billed by them.
                 value = service_tier(settings.get('service_tier')) if (provider_key(settings.get('model_provider_id')) or route) == 'openai' else None
                 if not turn_usage: tier, pending = value, ()
-                elif value != tier: tier, pending = None, (value,)
+                elif value != (pending[0] if pending else tier): tier, pending = None, (value,)
             elif kind == 'turn_context':
                 model = p.get('model') or p.get('model_slug') or model
                 project = p.get('cwd') or project
@@ -1389,7 +1389,9 @@ def price_detail(r, catalog):
     for threshold, candidate in [(200000, '_above_200k_tokens'), (256000, '_above_256k_tokens'), (272000, '_above_272k_tokens')]:
         if context > threshold and 'input_cost_per_token' + candidate in rate: suffix = candidate
     tier, basis = record_tier(r)
-    if tier is None and 'input_cost_per_token_priority' in rate: basis = 'assumed'
+    # Only Codex records a speed, so only its unknown tiers are an assumption
+    # worth reporting; other sources never claim a tier.
+    if tier is None and r['provider'] == 'codex' and 'input_cost_per_token_priority' in rate: basis = 'assumed'
     # Standard is the unsuffixed rate. Any other tier reads the catalog's
     # tier-suffixed rate for the same context band; a tier with no published
     # rate leaves the record unpriced rather than borrowing Standard.

@@ -53,22 +53,30 @@ args = parser.parse_args()
 enabled = set(c.settings()['enabled'])
 
 def recorded():
-    """Per route and model: the summed token categories, as one synthetic record."""
+    """Unpriced records per route, model, and speed tier.
+
+    Each record is priced on its own, as the dashboard does, so a long-context
+    threshold or a tier rate applies to one request and never to a sum.
+    """
     database = sqlite3.connect(f"file:{c.STATE / 'usage.sqlite'}?mode=ro", uri=True)
     database.row_factory = sqlite3.Row
     since = int(time.time()) - args.days * 86400
-    # A speed tier prices from its own rates, so a missing Fast rate is a gap of
-    # its own. A ledger not yet scanned by this version has no tier columns.
-    columns = {row[1] for row in database.execute('PRAGMA table_info(events)')}
-    tier = 'COALESCE(serviceTier, requestedServiceTier)' if 'requestedServiceTier' in columns else 'NULL'
-    return database.execute(
-        f"SELECT provider, COALESCE(apiProvider,'') apiProvider, model, {tier} serviceTier,"
-        " SUM(input) input, SUM(output) output, SUM(cacheRead) cacheRead, SUM(cacheWrite) cacheWrite,"
-        " SUM(cacheWrite1h) cacheWrite1h, SUM(reasoning) reasoning, SUM(reportedCostTicks) reportedCostTicks,"
-        " SUM(reportedValue) reportedValue, SUM(modelCalls) modelCalls, SUM(turns) turns,"
-        " COUNT(*) records, MAX(ts) ts, SUM(input+output+cacheRead+cacheWrite) tokens"
-        f" FROM events WHERE ts>=? AND model<>'' GROUP BY provider, apiProvider, model, {tier}"
-        " ORDER BY tokens DESC", (since,))
+    rates = c.load_rates()['document']
+    groups = {}
+    for row in database.execute("SELECT * FROM events WHERE ts>=? AND model<>''", (since,)):
+        record = dict(row)
+        if c.price(record, rates)[0] is not None: continue
+        tier = record.get('serviceTier') or record.get('requestedServiceTier')
+        key = (record['provider'], record.get('apiProvider') or '', record['model'], tier)
+        tokens = sum(record[f] for f in c.FIELDS[:4])
+        group = groups.get(key)
+        if group is None:
+            # The first unpriced record stands for the group in the hint.
+            group = groups[key] = record | {'serviceTier': tier, 'requestedServiceTier': None,
+                                            'tokens': 0, 'records': 0, 'lastSeen': 0}
+        group['tokens'] += tokens; group['records'] += 1
+        group['lastSeen'] = max(group['lastSeen'], record['ts'])
+    return sorted(groups.values(), key=lambda group: group['tokens'], reverse=True)
 
 def owns(provider):
     return OWNERS.get(provider, DEFAULT_OWNER)
@@ -100,11 +108,8 @@ def main():
             upstream = json.load(response)
     found = []
     hidden = 0
-    for row in recorded():
-        record = dict(row)
+    for record in recorded():
         if record['tokens'] < args.minimum_tokens:
-            continue
-        if c.price(record, rates)[0] is not None:
             continue
         # A source the dashboard does not count cannot show an unpriced warning,
         # so it is not work unless the caller asks for the whole ledger.
@@ -114,7 +119,7 @@ def main():
         table, step = owns(record['provider'])
         found.append({'provider': record['provider'], 'model': record['model'], 'tier': record['serviceTier'],
                       'tokens': record['tokens'], 'records': record['records'],
-                      'lastSeen': record['ts'], 'table': table, 'refresh': step,
+                      'lastSeen': record['lastSeen'], 'table': table, 'refresh': step,
                       'hint': hint(record, rates, upstream)})
     if args.check:
         raise SystemExit(1 if found else 0)

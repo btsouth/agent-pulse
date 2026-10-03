@@ -1176,6 +1176,8 @@ class CollectorTests(unittest.TestCase):
             # next turn, so the rest of this one has no known tier.
             fast, 'usage', 'turn', 'usage',
             {'settings': {'model_provider_id': 'openai', 'service_tier': 'auto'}}, 'turn', 'usage',
+            # A pending change that is then unset mid-turn leaves the next turn unknown.
+            'usage', fast, {'settings': {'model_provider_id': 'openai'}}, 'turn', 'usage',
             {'settings': {'model_provider_id': 'openai', 'service_tier': 'fast'}}, 'turn', 'usage',
             # Tiers belong to OpenAI's API, not to another model provider.
             {'settings': {'model_provider_id': 'commandcode', 'service_tier': 'priority'}}, 'turn', 'usage',
@@ -1184,7 +1186,7 @@ class CollectorTests(unittest.TestCase):
             'turn', 'usage'])
         tiers = [r['requestedServiceTier'] for r in c.codex_records(path)]
         self.assertEqual(tiers, [None, 'priority', 'priority', 'priority', 'default', None, 'priority',
-                                 None, 'priority', None, None])
+                                 None, None, None, 'priority', None, None])
 
     def test_codex_tier_pricing_standard_fast_flex_and_unknown(self):
         rates = c.load_rates()['document']
@@ -1213,6 +1215,8 @@ class CollectorTests(unittest.TestCase):
         # Models without tier rates are not reported as a Standard assumption.
         opus = c.record('o', 'claude', 's', 1, 'claude-opus-5-5', '/p', 'CLI', input=1000)
         self.assertEqual(c.price_detail(opus, rates)[2], (None, None))
+        gemini = c.record('m', 'gemini', 's', 1, 'gemini-2.5-pro', '/p', 'Gemini', input=1000)
+        self.assertEqual(c.price_detail(gemini, rates)[2], (None, None))
         # Fast is 2x every applicable Standard rate; the separate subscription
         # allowance multiplier is not an API price.
         sol = rates['codex/gpt-6.1-sol']
