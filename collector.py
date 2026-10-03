@@ -88,8 +88,8 @@ DEFAULTS = {'enabled': ['codex', 'claude', 'opencode-go'], 'monthlyPrices': {},
             'clinepassApiKey': '', 'updateCheck': True}
 # The update notice asks GitHub for the latest release once a day. It sends
 # no usage data and can be switched off in Settings.
-RELEASE_URL = 'https://api.github.com/repos/btsouth/omarchy-usage-dashboard/releases/latest'
-INSTALL_URL = 'https://raw.githubusercontent.com/btsouth/omarchy-usage-dashboard/main/install.sh'
+RELEASE_URL = 'https://api.github.com/repos/btsouth/agent-pulse/releases/latest'
+INSTALL_URL = 'https://raw.githubusercontent.com/btsouth/agent-pulse/main/install.sh'
 PLUGIN_ID = 'community.ai-usage-dashboard'
 FIELDS = ('input', 'output', 'cacheRead', 'cacheWrite', 'cacheWrite1h', 'reasoning')
 # OpenAI service tiers by the names its responses and the pricing catalog use.
