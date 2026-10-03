@@ -136,7 +136,7 @@ class RecoveryTests(unittest.TestCase):
             subprocess.run(['bash',str(ROOT/'install.sh'),'--no-systemd'],env=env,check=True,capture_output=True)
             self.assertEqual(list(work.iterdir()),[])
             self.assertTrue((home/'.local/bin'/APP).exists())
-            self.assertEqual((home/'.local/share'/APP/'app/VERSION').read_text(), (ROOT/'VERSION').read_text())
+            self.assertEqual((home/'data'/APP/'app/VERSION').read_text(), (ROOT/'VERSION').read_text())
 
     def test_installed_refresh_report_repeat_and_uninstall(self):
         import datetime as dt
