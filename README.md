@@ -1,6 +1,6 @@
 # Agent Pulse for Omarchy
 
-[![Checks](https://github.com/btsouth/omarchy-usage-dashboard/actions/workflows/check.yml/badge.svg)](https://github.com/btsouth/omarchy-usage-dashboard/actions/workflows/check.yml)
+[![Checks](https://github.com/btsouth/agent-pulse/actions/workflows/check.yml/badge.svg)](https://github.com/btsouth/agent-pulse/actions/workflows/check.yml)
 
 See how much your coding agents use, which account is nearing its limit, and when its allowance resets. Agent Pulse counts local token history and shows it in an Omarchy bar widget and dashboard. API value estimates include recorded Codex Fast mode.
 
@@ -13,14 +13,14 @@ See how much your coding agents use, which account is nearing its limit, and whe
 Requires Omarchy 4 with Quickshell, Python 3.11+, and a systemd user session. Older Waybar-based versions are not supported.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/btsouth/omarchy-usage-dashboard/main/install.sh | bash -s -- --with-plugin
+curl -fsSL https://raw.githubusercontent.com/btsouth/agent-pulse/main/install.sh | bash -s -- --with-plugin
 ```
 
-Drop `--with-plugin` for the dashboard without the bar widget. To pin a release, pass the ref to Bash after the pipe: `curl -fsSL https://raw.githubusercontent.com/btsouth/omarchy-usage-dashboard/main/install.sh | OMARCHY_USAGE_REF=v1.10.1 bash -s -- --with-plugin`. Installing from a checkout also works:
+Drop `--with-plugin` for the dashboard without the bar widget. To pin a release, pass the ref to Bash after the pipe: `curl -fsSL https://raw.githubusercontent.com/btsouth/agent-pulse/main/install.sh | OMARCHY_USAGE_REF=v1.10.1 bash -s -- --with-plugin`. Installing from a checkout also works:
 
 ```sh
-git clone https://github.com/btsouth/omarchy-usage-dashboard.git
-cd omarchy-usage-dashboard
+git clone https://github.com/btsouth/agent-pulse.git
+cd agent-pulse
 python3 install.py --with-plugin
 ```
 
@@ -154,7 +154,7 @@ The dashboard and bar panel show a command when a newer GitHub release is availa
 For older installations, re-run the install command once to enable notices:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/btsouth/omarchy-usage-dashboard/main/install.sh | bash -s -- --with-plugin
+curl -fsSL https://raw.githubusercontent.com/btsouth/agent-pulse/main/install.sh | bash -s -- --with-plugin
 ```
 
 From a checkout, use `git pull --ff-only` and `python3 install.py --with-plugin` instead. Omit `--with-plugin` if you installed without the bar widget. Updates preserve your history and preferences.

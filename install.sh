@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install or update the AI Usage Dashboard from the repository tarball.
 #
-#   curl -fsSL https://raw.githubusercontent.com/btsouth/omarchy-usage-dashboard/main/install.sh | bash -s -- --with-plugin
+#   curl -fsSL https://raw.githubusercontent.com/btsouth/agent-pulse/main/install.sh | bash -s -- --with-plugin
 #
 # Environment overrides for testing or pinning a version:
 #   OMARCHY_USAGE_REF=v1.0.0   archive ref (branch or tag), default main
@@ -9,7 +9,7 @@
 set -euo pipefail
 
 ref="${OMARCHY_USAGE_REF:-main}"
-url="${OMARCHY_USAGE_TARBALL:-https://github.com/btsouth/omarchy-usage-dashboard/archive/${ref}.tar.gz}"
+url="${OMARCHY_USAGE_TARBALL:-https://github.com/btsouth/agent-pulse/archive/${ref}.tar.gz}"
 
 for command in curl tar python3; do
   command -v "$command" >/dev/null || { echo "install.sh: $command is required" >&2; exit 1; }
