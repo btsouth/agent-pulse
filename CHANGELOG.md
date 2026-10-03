@@ -1,8 +1,11 @@
 # Changelog
 
-## Unreleased
+## 1.10.1 - 2026-10-03
 
 - Price Codex usage at the speed each turn requested. Fast requests use Fast rates, 2x Standard on GPT-6.1 Sol, GPT-6 Sol and GPT-6 Luna, and the cache savings follow the same rates. Codex records the requested speed but not the one the server used, and does not record it for a thread's first turn; those tokens stay at Standard rates and the dashboard says how many there are. The first scan after updating re-reads Codex transcripts once to recover the speeds they recorded; token totals do not change.
+
+- Show speed uncertainty beside the API value estimate. Corrected speed evidence now replaces stale labels and refreshes synced ledgers without changing token totals.
+- Repair the account and pinned-limit UI checks after the folding redesign, use a current Sol model in the synthetic demo, and refresh the installation and pricing documentation.
 
 ## 1.10.0 - 2026-10-03
 

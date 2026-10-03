@@ -30,7 +30,14 @@ with tempfile.TemporaryDirectory(prefix='usage-ui-qa-') as tmp:
  (usage_file.parent/'work.json').write_text(json.dumps({'id':'work','name':'Work','limits':[{'label':'Weekly (7-day)',
      'percent':.65,'resetsAt':reset_at}]}))
  shutil.copytree(root/'ui',b/'ui'); p=b/'ui/shell.qml'; q=p.read_text().replace('implicitWidth: 1200','implicitWidth: 1000').replace('implicitHeight: 900','implicitHeight: 640')
- q=q.replace('function quit(): void', '''function qaClock(): string {
+ q=q.replace('function quit(): void', '''function qaTierSummary(): string {
+            return JSON.stringify([
+                root.tierSummary({tokens:0}),
+                root.tierSummary({tokens:100,fastTokens:0,tierAssumedTokens:0}),
+                root.tierSummary({tokens:100,fastTokens:73,tierAssumedTokens:27}),
+                root.tierSummary({tokens:1000,fastTokens:0,tierAssumedTokens:1})])
+        }
+        function qaClock(): string {
             var start=Math.floor(new Date(2026,8,24,21,0,0).getTime()/1000)
             var hour={start:start,label:"21:00",title:"21:00 EDT to 22:00 EDT"}
             return JSON.stringify({label:root.localClock(start),title:root.hourTitle(hour),row:hourlyView.hourLabel(hour)})
@@ -55,7 +62,7 @@ with tempfile.TemporaryDirectory(prefix='usage-ui-qa-') as tmp:
             return JSON.stringify({loading:scan.running || root.pending,account:root.accountViewId,
                 accountLabel:accountPicker.displayText,periodLabel:periodPicker.displayText,selection:root.selection,
                 tokens:root.data ? root.data.summary.tokens : -1,models:root.data ? root.data.models.map(m => ({name:m.name,tokens:m.tokens})) : [],
-                detail:accountDetail.parent.visible,options:root.accountViews.map(a => a.id),
+                detail:accountSection.visible,options:root.accountViews.map(a => a.id),
                 quota:root.currentAccount ? root.currentAccount.quota : null})
         }
         function qaScan(quiet: string): string {
@@ -63,7 +70,7 @@ with tempfile.TemporaryDirectory(prefix='usage-ui-qa-') as tmp:
             return JSON.stringify({running:scan.running,loading:root.viewLoading,enabled:scroll.enabled,opacity:scroll.opacity})
         }
         function qaPin(): string {
-            return JSON.stringify({visible:pinnedColumn.parent.visible,pins:root.pinnedLimits.map(pin => {
+            return JSON.stringify({visible:pinnedSection.visible,pins:root.pinnedLimits.map(pin => {
                 var limit=root.pinnedWindow(pin)
                 return {name:root.pinnedName(pin),label:pin.label,percent:limit ? limit.percent : null,
                     reset:limit ? root.pinnedResetText(limit.resetsAt) : ""}
@@ -120,6 +127,7 @@ with tempfile.TemporaryDirectory(prefix='usage-ui-qa-') as tmp:
   time.sleep(1.5)
   startup=json.loads(ipc('qaData'))
   assert startup['account']=='codex:local' and startup['tokens']==320,startup
+  assert json.loads(ipc('qaTierSummary')) == ['', '', 'Fast rates · 27% speed unknown', '<1% speed unknown']
   assert json.loads(ipc('qaClock'))=={'label':'9:00 PM','title':'9:00 PM EDT to 10:00 PM EDT','row':'9:00 PM'}
   replacement=clock_file.with_suffix('.next');replacement.write_text(clock_config('ddd d MMM HH:mm'));os.replace(replacement,clock_file)
   time.sleep(.5)

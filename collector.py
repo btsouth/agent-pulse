@@ -1060,12 +1060,13 @@ class Ledger:
         # The tier the server reports it used, and the tier the client asked for.
         for name in ('serviceTier', 'requestedServiceTier'):
             if name not in columns: self.db.execute(f'ALTER TABLE events ADD COLUMN {name} TEXT')
-        if not self.db.execute("SELECT 1 FROM metadata WHERE key='serviceTierVersion'").fetchone():
+        if self.db.execute("SELECT value FROM metadata WHERE key='serviceTierVersion'").fetchone() != ('2',):
             # Re-read Codex rollouts once so retained events gain the tier their
             # transcript recorded. Events are upserted by id, so token totals do
             # not change, and events whose transcript is gone keep no tier.
             self.db.execute("DELETE FROM files WHERE path LIKE '%rollout-%.jsonl'")
-            self.db.execute("INSERT INTO metadata VALUES ('serviceTierVersion','1')")
+            self.db.execute("DELETE FROM metadata WHERE key='ledgerSignature'")
+            self.db.execute("INSERT OR REPLACE INTO metadata VALUES ('serviceTierVersion','2')")
 
     def put(self, r, source=None, growing=False):
         if not r['ts'] or (not sum(r[f] for f in FIELDS[:4]) and not r.get('turns')): return
@@ -1082,9 +1083,20 @@ class Ledger:
         update += ',apiProvider=COALESCE(excluded.apiProvider,events.apiProvider)'
         update += ',timePrecision=COALESCE(excluded.timePrecision,events.timePrecision)'
         update += ',serviceTier=COALESCE(excluded.serviceTier,events.serviceTier)'
-        update += ',requestedServiceTier=COALESCE(excluded.requestedServiceTier,events.requestedServiceTier)'
+        # Local parsing is authoritative even when the tier becomes unknown.
+        # An imported snapshot may enrich an unknown tier, but cannot replace
+        # evidence from this machine's source file.
+        if source is not None and 'requestedServiceTier' in r:
+            update += ',requestedServiceTier=excluded.requestedServiceTier'
+        else:
+            incoming = 'excluded.requestedServiceTier' if 'requestedServiceTier' in r else 'events.requestedServiceTier'
+            update += ",requestedServiceTier=CASE WHEN EXISTS (SELECT 1 FROM event_sources WHERE event_id=events.id AND path NOT LIKE 'machine:%') THEN events.requestedServiceTier ELSE " + incoming + ' END'
+        before_tier = self.db.execute('SELECT serviceTier,requestedServiceTier FROM events WHERE id=?', (r['id'],)).fetchone()
         self.db.execute(f'INSERT INTO events ({",".join(keys)}) VALUES ({",".join("?" for _ in keys)}) '
                         f'ON CONFLICT(id) DO UPDATE SET {update}', list(r.values()))
+        after_tier = self.db.execute('SELECT serviceTier,requestedServiceTier FROM events WHERE id=?', (r['id'],)).fetchone()
+        if before_tier != after_tier:
+            self.db.execute("DELETE FROM metadata WHERE key='ledgerSignature'")
         if source is not None:
             self.db.execute('INSERT OR IGNORE INTO event_sources VALUES (?,?)', (r['id'], str(source)))
 

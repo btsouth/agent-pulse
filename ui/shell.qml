@@ -365,6 +365,16 @@ Scope {
         if (b.tierAssumedTokens) parts.push(compact(b.tierAssumedTokens) + " tokens have no recorded speed and use Standard rates, so their value may be low.")
         return parts.join(" ")
     }
+    function tierSummary(b) {
+        if (!b || !b.tokens) return ""
+        var parts = []
+        if (b.fastTokens) parts.push("Fast rates")
+        if (b.tierAssumedTokens) {
+            var percent = b.tierAssumedTokens / b.tokens * 100
+            parts.push((percent < 1 ? "<1" : Math.round(percent)) + "% speed unknown")
+        }
+        return parts.join(" · ")
+    }
     function valueText(b) { return b.unpricedTokens === b.tokens && b.tokens > 0 ? "Unpriced" : money(b.value) + (b.unpricedTokens ? " + unpriced" : "") }
     function comparisonText() {
         if (!data || selection.hourStart || selection.resetWindow) return ""
@@ -1132,6 +1142,7 @@ Scope {
                     width: scroll.availableWidth
                     spacing: 18
                     Section {
+                        id: pinnedSection
                         sectionId: "pinned"
                         title: root.pinnedLimits.length === 1 ? "Pinned limit" : "Pinned limits"
                         summary: root.pinnedSummary()
@@ -1230,6 +1241,11 @@ Scope {
                                     Sub { text: "API VALUE ESTIMATE"; font.letterSpacing: 1.1 }
                                     Label { text: root.data ? root.valueText(root.data.summary) : "…"; font.pixelSize: 24 }
                                     Sub { text: "Separate from plan charges" }
+                                    Sub {
+                                        width: parent.width; wrapMode: Text.WordWrap
+                                        visible: text !== ""
+                                        text: root.data ? root.tierSummary(root.data.summary) : ""
+                                    }
                                 }
                             }
                             Rectangle { width: parent.width; height: 1; color: root.edge }
@@ -1240,6 +1256,7 @@ Scope {
                             }
                         }
                         Section {
+                            id: accountSection
                             sectionId: "account"
                             title: root.currentAccount ? root.currentAccount.name : ""
                             summary: root.accountSummary()

@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "community.ai-usage-dashboard",
   "name": "Agent Pulse",
-  "version": "1.10.0",
+  "version": "1.10.1",
   "author": "Tyler South",
   "license": "MIT",
-  "description": "Local token history, provider comparisons, Ollama Cloud, CommandCode and ClinePass usage, and estimated API value.",
+  "description": "AI agent usage, account limits, token history, and API value estimates.",
   "kinds": [
     "bar-widget"
   ],
@@ -15,7 +15,7 @@
   },
   "barWidget": {
     "displayName": "Agent Pulse",
-    "description": "Local token history, provider comparisons, Ollama Cloud, CommandCode and ClinePass usage, and estimated API value.",
+    "description": "AI agent usage, account limits, token history, and API value estimates.",
     "category": "AI",
     "aliases": [
       "agents",

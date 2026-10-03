@@ -1293,6 +1293,46 @@ class CollectorTests(unittest.TestCase):
         self.assertIsNotNone(ledger.db.execute('SELECT 1 FROM files WHERE path=?', (str(rollout),)).fetchone())
         ledger.db.close()
 
+    def test_tier_corrections_sync_without_changing_token_totals(self):
+        sync = self.root / 'tier-sync'
+        owner = c.Ledger(self.root / 'owner.sqlite')
+        peer = c.Ledger(self.root / 'peer.sqlite')
+        row = c.record('tier-correction', 'codex', 'session', '2026-09-04T12:00:00Z',
+                       'gpt-6.1-sol', '/p', 'CLI', input=100, cacheRead=1000)
+        source = str(self.root / 'rollout-local.jsonl')
+        cfg = c.DEFAULTS | {'ledgerSyncDir': str(sync), 'ledgerDeviceId': 'owner'}
+        for tier in ['priority', 'default', None]:
+            owner.put(row | {'requestedServiceTier': tier}, source)
+            owner.db.commit()
+            self.assertEqual(owner.sync_ledgers(cfg), [])
+            peer.import_ledger(sync / 'owner.sqlite', 'owner')
+            self.assertEqual(peer.db.execute('SELECT requestedServiceTier FROM events').fetchone(), (tier,))
+            self.assertEqual(peer.db.execute('SELECT COUNT(*),SUM(input+cacheRead+output) FROM events').fetchone(), (1, 1100))
+        # An older ledger omits the field, rather than explicitly clearing it.
+        owner.put(row | {'requestedServiceTier': 'priority'}, source)
+        owner.put(row, source)
+        self.assertEqual(owner.db.execute('SELECT requestedServiceTier FROM events').fetchone(), ('priority',))
+        # Remote copies cannot overwrite the local source's explicit unknown.
+        owner.put(row | {'requestedServiceTier': None}, source)
+        peer.put(row | {'requestedServiceTier': 'priority'})
+        peer.db.commit()
+        owner.import_ledger(self.root / 'peer.sqlite', 'peer')
+        self.assertEqual(owner.db.execute('SELECT requestedServiceTier FROM events').fetchone(), (None,))
+        owner.db.close(); peer.db.close()
+
+    def test_tier_migration_reindexes_preview_and_invalidates_snapshot(self):
+        path = self.root / 'preview.sqlite'
+        ledger = c.Ledger(path)
+        ledger.db.execute("UPDATE metadata SET value='1' WHERE key='serviceTierVersion'")
+        ledger.db.execute("INSERT INTO metadata VALUES ('ledgerSignature','old')")
+        ledger.db.execute("INSERT INTO files VALUES ('/p/rollout-preview.jsonl',1,1)")
+        ledger.db.commit(); ledger.db.close()
+        ledger = c.Ledger(path)
+        self.assertEqual(ledger.db.execute("SELECT value FROM metadata WHERE key='serviceTierVersion'").fetchone(), ('2',))
+        self.assertIsNone(ledger.db.execute("SELECT value FROM metadata WHERE key='ledgerSignature'").fetchone())
+        self.assertIsNone(ledger.db.execute("SELECT 1 FROM files WHERE path LIKE '%rollout-%.jsonl'").fetchone())
+        ledger.db.close()
+
     def test_new_commandcode_rates_keep_route_pricing(self):
         rates = c.load_rates()['document']
         for model, expected in [('xiaomi/mimo-v2.6-flash', .14 + .28 + .0028),

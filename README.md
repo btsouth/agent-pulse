@@ -2,7 +2,7 @@
 
 [![Checks](https://github.com/btsouth/omarchy-usage-dashboard/actions/workflows/check.yml/badge.svg)](https://github.com/btsouth/omarchy-usage-dashboard/actions/workflows/check.yml)
 
-Token trends, account comparisons, usage limits, estimated API value, and reset notifications for AI coding agents — all counted locally. Includes a bar widget with live limit meters that opens the full dashboard.
+See how much your coding agents use, which account is nearing its limit, and when its allowance resets. Agent Pulse counts local token history and shows it in an Omarchy bar widget and dashboard. API value estimates include recorded Codex Fast mode.
 
 ![Dashboard with generated example data](docs/dashboard.png)
 
@@ -16,7 +16,7 @@ Requires Omarchy 4 with Quickshell, Python 3.11+, and a systemd user session. Ol
 curl -fsSL https://raw.githubusercontent.com/btsouth/omarchy-usage-dashboard/main/install.sh | bash -s -- --with-plugin
 ```
 
-Drop `--with-plugin` for the dashboard without the bar widget. To pin a release, pass the ref to Bash after the pipe: `curl -fsSL https://raw.githubusercontent.com/btsouth/omarchy-usage-dashboard/main/install.sh | OMARCHY_USAGE_REF=v1.10.0 bash -s -- --with-plugin`. Installing from a checkout also works:
+Drop `--with-plugin` for the dashboard without the bar widget. To pin a release, pass the ref to Bash after the pipe: `curl -fsSL https://raw.githubusercontent.com/btsouth/omarchy-usage-dashboard/main/install.sh | OMARCHY_USAGE_REF=v1.10.1 bash -s -- --with-plugin`. Installing from a checkout also works:
 
 ```sh
 git clone https://github.com/btsouth/omarchy-usage-dashboard.git
