@@ -227,6 +227,8 @@ Scope {
     property bool themePending: false
     property var draftEnabled: ["codex", "claude", "opencode-go"]
     property string notice: ""
+    property bool draftUpdateCheck: true
+    readonly property var updateInfo: data && data.update ? data.update : ({available: false})
     property var providerOptions: data ? data.availableProviders || [] : []
     readonly property var machineAccounts: data && data.accountOptions ? data.accountOptions.filter(a => a.id.indexOf("machine:") === 0) : []
     property var draftPrices: ({})
@@ -507,6 +509,7 @@ Scope {
     function openSettings() {
         notice = ""
         var s = data ? data.settings : {}
+        draftUpdateCheck = s.updateCheck !== false
         draftEnabled = (s.enabled || ["codex", "claude", "opencode-go"]).slice()
         draftAccounts = JSON.parse(JSON.stringify(s.accounts || []))
         draftLocalLabel = s.localAccountLabel || "Local"
@@ -534,7 +537,7 @@ Scope {
             prices[p] = n
         }
         saveError = ""
-        var s = {accounts: draftAccounts, localAccountLabel: draftLocalLabel, enabled: draftEnabled, monthlyPrices: prices, windowOpacity: opacitySlider.value, clinepassApiKey: draftClinePassKey,
+        var s = {updateCheck: draftUpdateCheck, accounts: draftAccounts, localAccountLabel: draftLocalLabel, enabled: draftEnabled, monthlyPrices: prices, windowOpacity: opacitySlider.value, clinepassApiKey: draftClinePassKey,
                  ledgerSyncDir: draftLedgerSyncDir, ledgerDeviceId: draftLedgerDeviceId, ollamaApiKey: draftOllamaKey, commandcodeApiKey: draftCommandCodeKey}
         homeOptions.forEach(h => s[h.key] = (draftHomes[h.key] || "").split("\n").filter(x => x.trim()).map(x => x.trim()))
         save.command = ["python3", helper, "settings", "--save"]
@@ -1031,6 +1034,21 @@ Scope {
                 Choice { visible: !root.settingsOpen; text: "Refresh"; enabled: !root.viewLoading && !live.running; onClicked: root.refreshLive() }
             }
             Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: root.edge }
+            ColumnLayout {
+                Layout.fillWidth: true
+                visible: !root.settingsOpen && root.updateInfo.available === true
+                Label { text: "Agent Pulse " + (root.updateInfo.latest || "") + " is available"; color: root.accent }
+                Sub { text: "Run this command in a terminal to update. History and preferences are preserved."; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+                TextArea {
+                    Layout.fillWidth: true
+                    text: root.updateInfo.command || ""
+                    readOnly: true; selectByMouse: true; wrapMode: TextEdit.WrapAnywhere
+                    font.pixelSize: 12; color: root.ink
+                    background: Rectangle { color: root.surface; radius: 6 }
+                    Accessible.name: "Update command"
+                }
+            }
+
             Label { visible: root.notice !== ""; text: root.notice; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: root.accent }
             Label { visible: root.error !== ""; text: root.error; color: root.colorFor("claude"); Layout.fillWidth: true; wrapMode: Text.WordWrap }
             Label { visible: !!root.data && !!root.data.period.error; text: root.data ? root.data.period.error : ""; color: root.colorFor("claude"); Layout.fillWidth: true; wrapMode: Text.WordWrap }
@@ -1799,9 +1817,19 @@ Scope {
                     Label { text: "Make it yours"; font.pixelSize: 24; font.weight: Font.DemiBold }
                     Sub { text: "Analytics preferences stay on this machine. Existing app credentials are read, never changed." }
                     Flow { width: parent.width; spacing: 8
-                        Repeater { model: [{id:"sources",name:"Sources"},{id:"accounts",name:"Accounts"},{id:"pricing",name:"Pricing"},{id:"sync",name:"Sync"},{id:"appearance",name:"Appearance"}]
+                        Repeater { model: [{id:"sources",name:"Sources"},{id:"accounts",name:"Accounts"},{id:"pricing",name:"Pricing"},{id:"sync",name:"Sync"},{id:"appearance",name:"Appearance"},{id:"updates",name:"Updates"}]
                             Choice { required property var modelData; text: modelData.name; selected: root.settingsTab === modelData.id; onClicked: root.settingsTab = modelData.id }
                         }
+                    }
+                    CheckBox {
+                        visible: root.settingsTab === "updates"
+                        text: "Check for new releases"
+                        checked: root.draftUpdateCheck
+                        onToggled: root.draftUpdateCheck = checked
+                    }
+                    Sub {
+                        visible: root.settingsTab === "updates"; width: parent.width; wrapMode: Text.WordWrap
+                        text: "Checks GitHub once a day during refresh. Sends no usage data. Updates are installed only when you run the command."
                     }
                     Label { visible: root.settingsTab === "sources"; text: "Visible providers"; font.pixelSize: 16 }
                     Flow { visible: root.settingsTab === "sources"; width: parent.width; spacing: 10

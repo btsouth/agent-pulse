@@ -28,7 +28,10 @@ class CollectorTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         for patcher in (patch.object(c, 'HOME', self.root),
                         patch.dict(os.environ, self.sandbox_env()),
-                        patch.object(c.urllib.request, 'urlopen', side_effect=AssertionError('Unexpected network in test'))):
+                        patch.object(c.urllib.request, 'urlopen', side_effect=AssertionError('Unexpected network in test')),
+                        # No version means no update check, so a scan under
+                        # test never asks GitHub for the latest release.
+                        patch.object(c, 'installed_version', return_value='')):
             patcher.start(); self.addCleanup(patcher.stop)
         # Every path the collector writes must resolve inside the fixture. A
         # test that reaches the real home would overwrite the user's settings.
@@ -77,6 +80,58 @@ class CollectorTests(unittest.TestCase):
              patch.object(c.Ledger, 'sync_ledgers', side_effect=AssertionError('Pulse synced the ledger')):
             c.main()
         return json.loads(output.getvalue())
+
+    def release_response(self, tag):
+        return contextlib.closing(io.BytesIO(json.dumps({'tag_name': tag}).encode()))
+
+    def test_update_check_reports_a_newer_release_once_a_day(self):
+        cfg = c.settings()
+        with patch.object(c, 'installed_version', return_value='1.9.0'):
+            self.assertFalse(c.update_status(cfg)['available'])
+            with patch.object(c.urllib.request, 'urlopen', return_value=self.release_response('v1.10.0')) as request:
+                c.check_update(cfg)
+                c.check_update(cfg)
+            self.assertEqual(request.call_count, 1)
+            status = c.update_status(cfg)
+            self.assertEqual((status['available'], status['current'], status['latest']), (True, '1.9.0', '1.10.0'))
+            self.assertNotIn('--with-plugin', status['command'])
+            self.assertIn('OMARCHY_USAGE_REF=v1.10.0 bash', status['command'])
+            plugin = c.CONFIG.parents[1] / 'plugins' / c.PLUGIN_ID / 'manifest.json'
+            plugin.parent.mkdir(parents=True); plugin.write_text('{}')
+            self.assertTrue(c.update_status(cfg)['command'].endswith('| OMARCHY_USAGE_REF=v1.10.0 bash -s -- --with-plugin'))
+        with patch.object(c, 'installed_version', return_value='1.10.0'):
+            self.assertFalse(c.update_status(cfg)['available'])
+
+    def test_update_check_can_be_switched_off_and_survives_failures(self):
+        with patch.object(c, 'installed_version', return_value='1.9.0'):
+            # The fixture's urlopen raises on any call, so reaching it fails the test.
+            c.check_update(c.settings() | {'updateCheck': False})
+            self.assertFalse((c.STATE / 'update.json').exists())
+            with patch.object(c.urllib.request, 'urlopen', side_effect=OSError('offline')):
+                c.check_update(c.settings())
+            self.assertFalse(c.update_status(c.settings())['available'])
+            with patch.object(c.urllib.request, 'urlopen', return_value=self.release_response('nightly')):
+                c.check_update(c.settings(), force=True)
+            self.assertFalse(c.update_status(c.settings())['available'])
+            with patch.object(c.urllib.request, 'urlopen', return_value=self.release_response('v2.0.0')):
+                c.check_update(c.settings(), force=True)
+            self.assertTrue(c.update_status(c.settings())['available'])
+            self.assertFalse(c.update_status(c.settings() | {'updateCheck': False})['available'])
+        self.assertLess(c.version_key('1.9.2'), c.version_key('1.10.0'))
+
+    def test_update_check_recovers_from_malformed_cache(self):
+        with patch.object(c, 'installed_version', return_value='1.9.0'):
+            for cached in ([], {'attemptedAt': 'bad'}, {'attemptedAt': time.time() + 90000}):
+                c.atomic_json(c.STATE / 'update.json', cached)
+                with patch.object(c.urllib.request, 'urlopen', return_value=self.release_response('v1.10.0')):
+                    c.check_update(c.settings())
+                self.assertTrue(c.update_status(c.settings())['available'])
+
+    def test_update_check_setting_is_saved_and_kept_when_not_sent(self):
+        self.assertTrue(c.settings()['updateCheck'])
+        self.assertFalse(c.save_settings({'updateCheck': False})['updateCheck'])
+        self.assertFalse(c.save_settings({})['updateCheck'])
+        self.assertTrue(c.save_settings({'updateCheck': True})['updateCheck'])
 
     def test_pinned_limits_migrate_and_enforce_three_without_touching_ledger(self):
         c.CONFIG.parent.mkdir(parents=True)

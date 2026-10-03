@@ -130,12 +130,13 @@ class RecoveryTests(unittest.TestCase):
             archive=Path(tmp)/'source.tar.gz'
             with tarfile.open(archive,'w:gz') as tar:
                 for source in ROOT.iterdir():
-                    if source.suffix in ('.py','.json','.sh') or source.name in ('LICENSE','ui','plugin','licenses'):
+                    if source.suffix in ('.py','.json','.sh') or source.name in ('LICENSE','VERSION','ui','plugin','licenses'):
                         tar.add(source,arcname='source/'+source.name)
             env['OMARCHY_USAGE_TARBALL']=str(archive)
             subprocess.run(['bash',str(ROOT/'install.sh'),'--no-systemd'],env=env,check=True,capture_output=True)
             self.assertEqual(list(work.iterdir()),[])
             self.assertTrue((home/'.local/bin'/APP).exists())
+            self.assertEqual((home/'data'/APP/'app/VERSION').read_text(), (ROOT/'VERSION').read_text())
 
     def test_installed_refresh_report_repeat_and_uninstall(self):
         import datetime as dt
@@ -155,6 +156,10 @@ class RecoveryTests(unittest.TestCase):
                     'total_token_usage':{'input_tokens':100,'output_tokens':20}}}})+'\n')
             subprocess.run(['python3',str(ROOT/'install.py'),'--with-plugin','--no-systemd'],env=env,check=True,capture_output=True)
             runtime=Path(env['XDG_DATA_HOME'])/APP/'app'
+            # This installed-process fixture must not ask the real GitHub API.
+            prefs=Path(env['XDG_CONFIG_HOME'])/'omarchy/ai-usage/settings.json'
+            prefs.parent.mkdir(parents=True,exist_ok=True)
+            prefs.write_text(json.dumps({'enabled':['codex'],'updateCheck':False}))
             for _ in range(2):
                 subprocess.run([str(home/'.local/bin'/f'{APP}-refresh'),'--force'],env=env,check=True,capture_output=True)
                 result=subprocess.run(['python3',str(runtime/'collector.py'),'report'],env=env,check=True,capture_output=True,text=True)

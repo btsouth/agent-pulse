@@ -28,6 +28,8 @@ Panel {
   property var pinnedLimits: []
   property var pendingPins: []
   property string pinError: ""
+  readonly property var updateInfo: usage.hourlySummary && usage.hourlySummary.update
+    ? usage.hourlySummary.update : ({available: false})
 
   FileView {
     id: pinFile
@@ -851,6 +853,32 @@ Panel {
                   "--account-record", root.selectedProviderId])
                 root.close()
               }
+            }
+          }
+
+          Column {
+            width: parent.width
+            spacing: Style.space(6)
+            visible: root.updateInfo.available === true
+            Text {
+              width: parent.width; wrapMode: Text.WordWrap
+              text: "Agent Pulse " + (root.updateInfo.latest || "") + " is available"
+              color: root.foreground; font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+            TextArea {
+              width: parent.width
+              text: root.updateInfo.command || ""
+              readOnly: true; selectByMouse: true; wrapMode: TextEdit.WrapAnywhere
+              color: root.foreground; font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              background: Rectangle { color: root.track; radius: 6 }
+              Accessible.name: "Update command"
+            }
+            Text {
+              width: parent.width; wrapMode: Text.WordWrap
+              text: "Select and copy the command, then run it in a terminal."
+              color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
             }
           }
 

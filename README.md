@@ -16,7 +16,7 @@ Requires Omarchy 4 with Quickshell, Python 3.11+, and a systemd user session. Ol
 curl -fsSL https://raw.githubusercontent.com/btsouth/omarchy-usage-dashboard/main/install.sh | bash -s -- --with-plugin
 ```
 
-Drop `--with-plugin` for the dashboard without the bar widget. To pin a release, pass the ref to Bash after the pipe: `curl -fsSL https://raw.githubusercontent.com/btsouth/omarchy-usage-dashboard/main/install.sh | OMARCHY_USAGE_REF=v1.9.0 bash -s -- --with-plugin`. Installing from a checkout also works:
+Drop `--with-plugin` for the dashboard without the bar widget. To pin a release, pass the ref to Bash after the pipe: `curl -fsSL https://raw.githubusercontent.com/btsouth/omarchy-usage-dashboard/main/install.sh | OMARCHY_USAGE_REF=v1.10.0 bash -s -- --with-plugin`. Installing from a checkout also works:
 
 ```sh
 git clone https://github.com/btsouth/omarchy-usage-dashboard.git
@@ -149,7 +149,9 @@ Reports are generated locally. Provider quota requests and Cursor history reques
 
 ## Update
 
-Re-run the install command to update:
+The dashboard and bar panel show a command when a newer GitHub release is available. Checks run once a day and can be disabled in **Settings → Updates**. Select and copy the command, then run it in a terminal. It installs the published release and keeps your existing widget choice.
+
+For older installations, re-run the install command once to enable notices:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/btsouth/omarchy-usage-dashboard/main/install.sh | bash -s -- --with-plugin
