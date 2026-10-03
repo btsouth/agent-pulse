@@ -1143,6 +1143,218 @@ class CollectorTests(unittest.TestCase):
                 self.assertAlmostEqual(value, expected, places=9)
                 self.assertAlmostEqual(savings, cached * (1.9e-6 if cached <= 122_000 else 3.8e-6))
 
+    def tier_rollout(self, entries, provider='openai'):
+        """A Codex rollout with turns, thread settings, and distinct usage events."""
+        clock = iter(range(10, 60))
+        def at(): return f'2026-09-04T12:00:{next(clock):02d}Z'
+        lines = [{'type': 'session_meta', 'timestamp': '2026-09-04T12:00:05Z', 'payload': {
+            'id': 'tiers', 'timestamp': '2026-09-04T12:00:05Z', 'model_provider': provider}},
+            {'type': 'turn_context', 'timestamp': '2026-09-04T12:00:06Z', 'payload': {'model': 'gpt-6.1-sol'}}]
+        total = 0
+        for entry in entries:
+            if entry == 'turn':
+                lines.append({'type': 'event_msg', 'timestamp': at(), 'payload': {'type': 'task_started'}})
+            elif entry == 'usage':
+                total += 100
+                event = self.codex_event(at(), total)
+                lines.append(event)
+            else:
+                lines.append({'type': 'event_msg', 'timestamp': entry.get('ts') or at(), 'payload': {
+                    'type': 'thread_settings_applied', 'thread_settings': entry['settings']}})
+        return self.transcript('codex/sessions/2026/09/04/rollout-2026-09-04T12-00-05-tiers.jsonl', lines)
+
+    def test_codex_tier_follows_recorded_thread_settings(self):
+        fast = {'settings': {'model_provider_id': 'openai', 'service_tier': 'priority'}}
+        standard = {'settings': {'model_provider_id': 'openai', 'service_tier': 'default'}}
+        path = self.tier_rollout([
+            # The first turn names no tier: Codex logs settings from the second.
+            'turn', 'usage', fast, 'turn', 'usage', 'usage',
+            # A later turn without new settings keeps the thread's tier.
+            'turn', 'usage',
+            standard, 'turn', 'usage',
+            # A change after the turn produced usage may only apply from the
+            # next turn, so the rest of this one has no known tier.
+            fast, 'usage', 'turn', 'usage',
+            {'settings': {'model_provider_id': 'openai', 'service_tier': 'auto'}}, 'turn', 'usage',
+            # A pending change that is then unset mid-turn leaves the next turn unknown.
+            'usage', fast, {'settings': {'model_provider_id': 'openai'}}, 'turn', 'usage',
+            {'settings': {'model_provider_id': 'openai', 'service_tier': 'fast'}}, 'turn', 'usage',
+            # Tiers belong to OpenAI's API, not to another model provider.
+            {'settings': {'model_provider_id': 'commandcode', 'service_tier': 'priority'}}, 'turn', 'usage',
+            # Inherited fork history predates the session and is ignored.
+            {'ts': '2026-09-03T12:00:00Z', 'settings': {'model_provider_id': 'openai', 'service_tier': 'flex'}},
+            'turn', 'usage'])
+        tiers = [r['requestedServiceTier'] for r in c.codex_records(path)]
+        self.assertEqual(tiers, [None, 'priority', 'priority', 'priority', 'default', None, 'priority',
+                                 None, None, None, 'priority', None, None])
+
+    def test_codex_tier_pricing_standard_fast_flex_and_unknown(self):
+        rates = c.load_rates()['document']
+        def row(cached, **tiers):
+            return c.record('g', 'codex', 's', 1, 'gpt-6.1-sol', '/p', 'CLI', input=125_000, output=50_000,
+                            cacheRead=cached, cacheWrite=25_000) | tiers
+        # Standard short and full-request long context, from the published table.
+        for cached, standard in [(22_000, .25 + .5 + .0022 + .0625), (122_001, .5 + .75 + .0244002 + .125)]:
+            with self.subTest(cached=cached):
+                read_saving = cached * (1.9e-6 if cached <= 122_000 else 3.8e-6)
+                for tiers, factor, basis in [({'requestedServiceTier': 'default'}, 1, 'requested'),
+                                             ({'requestedServiceTier': 'priority'}, 2, 'requested'),
+                                             ({'requestedServiceTier': 'flex'}, .5, 'requested'),
+                                             ({}, 1, 'assumed'),
+                                             # A downgraded Fast request is billed at Standard.
+                                             ({'requestedServiceTier': 'priority', 'serviceTier': 'default'}, 1, 'served'),
+                                             ({'serviceTier': 'priority'}, 2, 'served')]:
+                    value, savings, (tier, evidence) = c.price_detail(row(cached, **tiers), rates)
+                    self.assertAlmostEqual(value, standard * factor, places=9)
+                    self.assertAlmostEqual(savings, read_saving * factor, places=9)
+                    self.assertEqual(evidence, basis)
+        # A tier with no published rate stays unpriced instead of borrowing Standard.
+        spark = c.record('x', 'codex', 's', 1, 'gpt-5.3-codex-spark', '/p', 'CLI', input=1000) | {'requestedServiceTier': 'priority'}
+        self.assertEqual(c.price(spark, rates), (None, None))
+        self.assertEqual(c.price(row(0, requestedServiceTier='ultrafast'), rates), (None, None))
+        # Models without tier rates are not reported as a Standard assumption.
+        opus = c.record('o', 'claude', 's', 1, 'claude-opus-5-5', '/p', 'CLI', input=1000)
+        self.assertEqual(c.price_detail(opus, rates)[2], (None, None))
+        gemini = c.record('m', 'gemini', 's', 1, 'gemini-2.5-pro', '/p', 'Gemini', input=1000)
+        self.assertEqual(c.price_detail(gemini, rates)[2], (None, None))
+        # Fast is 2x every applicable Standard rate; the separate subscription
+        # allowance multiplier is not an API price.
+        sol = rates['codex/gpt-6.1-sol']
+        for key in [k for k in sol if k.endswith('_priority')]:
+            self.assertAlmostEqual(sol[key], 2 * sol[key[:-len('_priority')]], places=15)
+
+    def test_mixed_tier_session_reconciles_with_request_prices(self):
+        ledger = c.Ledger(self.root / 'tiers.sqlite')
+        now = dt.datetime(2026, 9, 5, 12).astimezone()
+        rows = [c.record(key, 'codex', 'one-session', '2026-09-05T10:00:00', 'gpt-6.1-sol', '/p', 'T3 Code',
+                         input=1000 * n, output=200 * n, cacheRead=5000 * n, reasoning=50) | ({'requestedServiceTier': tier} if tier else {})
+                for n, (key, tier) in enumerate([('fast', 'priority'), ('standard', 'default'), ('unknown', None),
+                                                 ('fast-long', 'priority')], 1)]
+        rows[-1].update(input=300_000)
+        for r in rows: ledger.put(r)
+        rates = c.load_rates()
+        stored = [dict(zip(('id', 'tier'), r)) for r in ledger.db.execute('SELECT id,requestedServiceTier FROM events ORDER BY id')]
+        self.assertEqual({r['id']: r['tier'] for r in stored}, {'fast': 'priority', 'standard': 'default', 'unknown': None, 'fast-long': 'priority'})
+        with patch.object(c, 'load_rates', return_value=rates):
+            summary = c.report(ledger, c.DEFAULTS, 1, now=now)['summary']
+        priced = [c.price(r, rates['document']) for r in rows]
+        tokens = [sum(r[f] for f in c.FIELDS[:4]) for r in rows]
+        self.assertEqual(summary['tokens'], sum(tokens))
+        self.assertEqual(summary['reasoning'], 200)
+        self.assertEqual(summary['sessions'], 1)
+        self.assertAlmostEqual(summary['value'], sum(v for v, _ in priced), places=9)
+        self.assertAlmostEqual(summary['cacheSavings'], sum(s for _, s in priced), places=9)
+        self.assertEqual(summary['fastTokens'], tokens[0] + tokens[3])
+        self.assertEqual(summary['tierRequestedTokens'], tokens[0] + tokens[1] + tokens[3])
+        self.assertEqual(summary['tierAssumedTokens'], tokens[2])
+        self.assertEqual(summary['tierServedTokens'], 0)
+        # The Fast long-context request is twice its Standard price.
+        standard = c.price(rows[3] | {'requestedServiceTier': 'default'}, rates['document'])[0]
+        self.assertAlmostEqual(priced[3][0], 2 * standard, places=9)
+        ledger.db.close()
+
+    def test_ledger_migration_backfills_recorded_tiers_only(self):
+        fast = {'settings': {'model_provider_id': 'openai', 'service_tier': 'priority'}}
+        rollout = self.tier_rollout(['turn', 'usage', fast, 'turn', 'usage'])
+        path = self.root / 'old.sqlite'
+        # A ledger from before tiers: the previous schema, already indexed.
+        db = sqlite3.connect(path)
+        db.executescript('''
+          CREATE TABLE events (id TEXT PRIMARY KEY, provider TEXT, session TEXT, ts INTEGER,
+            model TEXT, project TEXT, client TEXT, input INTEGER, output INTEGER, cacheRead INTEGER,
+            cacheWrite INTEGER, cacheWrite1h INTEGER, reasoning INTEGER, reportedCostTicks INTEGER,
+            modelCalls INTEGER, turns INTEGER, reportedValue REAL, apiProvider TEXT, timePrecision TEXT);
+          CREATE TABLE files(path TEXT PRIMARY KEY, size INTEGER, mtime INTEGER);
+          CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT);
+          CREATE TABLE event_sources(event_id TEXT, path TEXT, PRIMARY KEY(event_id,path));
+          INSERT INTO metadata VALUES ('provenanceVersion','2');
+        ''')
+        for r in c.codex_records(rollout):
+            r.pop('requestedServiceTier')
+            db.execute(f'INSERT INTO events ({",".join(r)}) VALUES ({",".join("?" for _ in r)})', list(r.values()))
+            db.execute('INSERT INTO event_sources VALUES (?,?)', (r['id'], str(rollout.resolve())))
+        # Usage whose transcript no longer exists keeps an unknown tier.
+        gone = c.record('gone', 'codex', 'old', '2026-09-01T10:00:00Z', 'gpt-6.1-sol', '/p', 'CLI', input=500)
+        db.execute(f'INSERT INTO events ({",".join(gone)}) VALUES ({",".join("?" for _ in gone)})', list(gone.values()))
+        stat = rollout.stat()
+        db.execute('INSERT INTO files VALUES (?,?,?)', (str(rollout), stat.st_size, stat.st_mtime_ns))
+        db.commit()
+        before = db.execute('SELECT COUNT(*),SUM(input),SUM(output),SUM(cacheRead),SUM(cacheWrite),SUM(reasoning) FROM events').fetchone()
+        db.close()
+        ledger = c.Ledger(path)
+        ledger.scan(c.DEFAULTS)
+        rows = ledger.db.execute('SELECT id,requestedServiceTier,serviceTier FROM events ORDER BY ts').fetchall()
+        self.assertEqual([(t, s) for _, t, s in rows], [(None, None), (None, None), ('priority', None)])
+        self.assertEqual(rows[0][0], 'gone')
+        self.assertEqual(ledger.db.execute('SELECT COUNT(*),SUM(input),SUM(output),SUM(cacheRead),SUM(cacheWrite),SUM(reasoning) FROM events').fetchone(), before)
+        ledger.db.close()
+        # The one-time re-read is not repeated on the next open.
+        ledger = c.Ledger(path)
+        self.assertIsNotNone(ledger.db.execute('SELECT 1 FROM files WHERE path=?', (str(rollout),)).fetchone())
+        ledger.db.close()
+
+    def test_tier_corrections_sync_without_changing_token_totals(self):
+        sync = self.root / 'tier-sync'
+        owner = c.Ledger(self.root / 'owner.sqlite')
+        peer = c.Ledger(self.root / 'peer.sqlite')
+        row = c.record('tier-correction', 'codex', 'session', '2026-09-04T12:00:00Z',
+                       'gpt-6.1-sol', '/p', 'CLI', input=100, cacheRead=1000)
+        source = str(self.root / 'rollout-local.jsonl')
+        cfg = c.DEFAULTS | {'ledgerSyncDir': str(sync), 'ledgerDeviceId': 'owner'}
+        for tier in ['priority', 'default', None]:
+            owner.put(row | {'requestedServiceTier': tier}, source)
+            owner.db.commit()
+            self.assertEqual(owner.sync_ledgers(cfg), [])
+            peer.import_ledger(sync / 'owner.sqlite', 'owner')
+            self.assertEqual(peer.db.execute('SELECT requestedServiceTier FROM events').fetchone(), (tier,))
+            self.assertEqual(peer.db.execute('SELECT COUNT(*),SUM(input+cacheRead+output) FROM events').fetchone(), (1, 1100))
+        # An older ledger omits the field, rather than explicitly clearing it.
+        owner.put(row | {'requestedServiceTier': 'priority'}, source)
+        owner.put(row, source)
+        self.assertEqual(owner.db.execute('SELECT requestedServiceTier FROM events').fetchone(), ('priority',))
+        # Remote copies cannot overwrite the local source's explicit unknown.
+        owner.put(row | {'requestedServiceTier': None}, source)
+        peer.put(row | {'requestedServiceTier': 'priority'})
+        peer.db.commit()
+        owner.import_ledger(self.root / 'peer.sqlite', 'peer')
+        self.assertEqual(owner.db.execute('SELECT requestedServiceTier FROM events').fetchone(), (None,))
+        owner.db.close(); peer.db.close()
+
+    def test_stale_peer_cannot_undo_owner_tier_correction(self):
+        sync = self.root / 'three-machine-sync'
+        owner = c.Ledger(self.root / 'owner.sqlite')
+        peer = c.Ledger(self.root / 'peer.sqlite')
+        third = c.Ledger(self.root / 'third.sqlite')
+        row = c.record('shared-tier', 'codex', 'session', '2026-09-04T12:00:00Z',
+                       'gpt-6.1-sol', '/p', 'CLI', input=100, cacheRead=1000)
+        def cfg(device): return c.DEFAULTS | {'ledgerSyncDir': str(sync), 'ledgerDeviceId': device}
+        owner.put(row | {'requestedServiceTier': 'priority'}, str(self.root / 'owner-rollout.jsonl'))
+        owner.db.commit(); owner.sync_ledgers(cfg('a-owner'))
+        peer.sync_ledgers(cfg('z-peer'))
+        peer.sync_ledgers(cfg('z-peer'))  # Re-export the owner's original Fast evidence.
+        for tier in ['default', None]:
+            owner.put(row | {'requestedServiceTier': tier}, str(self.root / 'owner-rollout.jsonl'))
+            owner.db.commit(); owner.sync_ledgers(cfg('a-owner'))
+            # Sorted import sees the owner's correction before the stale peer.
+            third.sync_ledgers(cfg('third'))
+            third.sync_ledgers(cfg('third'))
+            self.assertEqual(third.db.execute('SELECT requestedServiceTier FROM events').fetchone(), (tier,))
+            self.assertEqual(third.db.execute('SELECT COUNT(*),SUM(input+cacheRead+output) FROM events').fetchone(), (1, 1100))
+        owner.db.close(); peer.db.close(); third.db.close()
+
+    def test_tier_migration_reindexes_preview_and_invalidates_snapshot(self):
+        path = self.root / 'preview.sqlite'
+        ledger = c.Ledger(path)
+        ledger.db.execute("UPDATE metadata SET value='1' WHERE key='serviceTierVersion'")
+        ledger.db.execute("INSERT INTO metadata VALUES ('ledgerSignature','old')")
+        ledger.db.execute("INSERT INTO files VALUES ('/p/rollout-preview.jsonl',1,1)")
+        ledger.db.commit(); ledger.db.close()
+        ledger = c.Ledger(path)
+        self.assertEqual(ledger.db.execute("SELECT value FROM metadata WHERE key='serviceTierVersion'").fetchone(), ('2',))
+        self.assertIsNone(ledger.db.execute("SELECT value FROM metadata WHERE key='ledgerSignature'").fetchone())
+        self.assertIsNone(ledger.db.execute("SELECT 1 FROM files WHERE path LIKE '%rollout-%.jsonl'").fetchone())
+        ledger.db.close()
+
     def test_new_commandcode_rates_keep_route_pricing(self):
         rates = c.load_rates()['document']
         for model, expected in [('xiaomi/mimo-v2.6-flash', .14 + .28 + .0028),

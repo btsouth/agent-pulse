@@ -53,18 +53,30 @@ args = parser.parse_args()
 enabled = set(c.settings()['enabled'])
 
 def recorded():
-    """Per route and model: the summed token categories, as one synthetic record."""
+    """Unpriced records per route, model, and speed tier.
+
+    Each record is priced on its own, as the dashboard does, so a long-context
+    threshold or a tier rate applies to one request and never to a sum.
+    """
     database = sqlite3.connect(f"file:{c.STATE / 'usage.sqlite'}?mode=ro", uri=True)
     database.row_factory = sqlite3.Row
     since = int(time.time()) - args.days * 86400
-    return database.execute(
-        "SELECT provider, COALESCE(apiProvider,'') apiProvider, model,"
-        " SUM(input) input, SUM(output) output, SUM(cacheRead) cacheRead, SUM(cacheWrite) cacheWrite,"
-        " SUM(cacheWrite1h) cacheWrite1h, SUM(reasoning) reasoning, SUM(reportedCostTicks) reportedCostTicks,"
-        " SUM(reportedValue) reportedValue, SUM(modelCalls) modelCalls, SUM(turns) turns,"
-        " COUNT(*) records, MAX(ts) ts, SUM(input+output+cacheRead+cacheWrite) tokens"
-        " FROM events WHERE ts>=? AND model<>'' GROUP BY provider, apiProvider, model"
-        " ORDER BY tokens DESC", (since,))
+    rates = c.load_rates()['document']
+    groups = {}
+    for row in database.execute("SELECT * FROM events WHERE ts>=? AND model<>''", (since,)):
+        record = dict(row)
+        if c.price(record, rates)[0] is not None: continue
+        tier = record.get('serviceTier') or record.get('requestedServiceTier')
+        key = (record['provider'], record.get('apiProvider') or '', record['model'], tier)
+        tokens = sum(record[f] for f in c.FIELDS[:4])
+        group = groups.get(key)
+        if group is None:
+            # The first unpriced record stands for the group in the hint.
+            group = groups[key] = record | {'serviceTier': tier, 'requestedServiceTier': None,
+                                            'tokens': 0, 'records': 0, 'lastSeen': 0}
+        group['tokens'] += tokens; group['records'] += 1
+        group['lastSeen'] = max(group['lastSeen'], record['ts'])
+    return sorted(groups.values(), key=lambda group: group['tokens'], reverse=True)
 
 def owns(provider):
     return OWNERS.get(provider, DEFAULT_OWNER)
@@ -72,6 +84,9 @@ def owns(provider):
 def hint(record, rates, upstream):
     """Why a row is unpriced, in the terms of the table that would fix it."""
     provider, model = record['provider'], record['model']
+    tier = record.get('serviceTier')
+    if tier and c.price(record | {'serviceTier': None}, rates)[0] is not None:
+        return f'no published {tier} tier rate for this model: add its _{tier} rates or leave it unpriced'
     if '/' not in model:
         # A resale table keys rows by the id the route returns, so a short id is
         # a different key rather than a missing rate.
@@ -93,11 +108,8 @@ def main():
             upstream = json.load(response)
     found = []
     hidden = 0
-    for row in recorded():
-        record = dict(row)
+    for record in recorded():
         if record['tokens'] < args.minimum_tokens:
-            continue
-        if c.price(record, rates)[0] is not None:
             continue
         # A source the dashboard does not count cannot show an unpriced warning,
         # so it is not work unless the caller asks for the whole ledger.
@@ -105,9 +117,9 @@ def main():
             hidden += 1
             continue
         table, step = owns(record['provider'])
-        found.append({'provider': record['provider'], 'model': record['model'],
+        found.append({'provider': record['provider'], 'model': record['model'], 'tier': record['serviceTier'],
                       'tokens': record['tokens'], 'records': record['records'],
-                      'lastSeen': record['ts'], 'table': table, 'refresh': step,
+                      'lastSeen': record['lastSeen'], 'table': table, 'refresh': step,
                       'hint': hint(record, rates, upstream)})
     if args.check:
         raise SystemExit(1 if found else 0)
@@ -115,7 +127,7 @@ def main():
         # Stable output for a watcher: the set of gaps, without counts or dates,
         # which move every day and would read as a change every tick.
         for gap in sorted(found, key=lambda entry: (entry['provider'], entry['model'])):
-            print(f"{gap['provider']}/{gap['model']}")
+            print(f"{gap['provider']}/{gap['model']}" + (f" ({gap['tier']})" if gap['tier'] else ''))
         return
     if args.json:
         print(json.dumps({'days': args.days, 'gaps': found, 'hiddenByDisabledSources': hidden}, indent=2))
@@ -127,7 +139,7 @@ def main():
         return
     print(f'{len(found)} unpriced model(s) in the last {args.days} days, worst first:\n')
     for gap in found:
-        print(f"  {gap['model']} on {gap['provider']}")
+        print(f"  {gap['model']} on {gap['provider']}" + (f" at the {gap['tier']} tier" if gap['tier'] else ''))
         print(f"    {gap['tokens']:,} tokens over {gap['records']} record(s), last seen {time.strftime('%Y-%m-%d', time.localtime(gap['lastSeen']))}")
         print(f"    table: {gap['table']}")
         print(f"    step:  {gap['refresh']}")

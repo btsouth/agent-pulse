@@ -356,6 +356,25 @@ Scope {
     function shortDate(value) { return value ? Qt.formatDate(new Date(value+"T12:00:00"),"MMM d") : "" }
     function display(b) { return metric === "tokens" ? compact(b ? b.tokens : 0) : b && b.tokens > 0 && b.unpricedTokens === b.tokens ? "Unpriced" : money(b ? b.value : 0) }
     function amount(b) { return b ? (metric === "tokens" ? b.tokens : b.value) : 0 }
+    // Which speed tier the API value rests on: the recorded Codex speed, or
+    // Standard rates where no speed was recorded.
+    function tierNote(b) {
+        if (!b) return ""
+        var parts = []
+        if (b.fastTokens) parts.push(compact(b.fastTokens) + " tokens use Fast rates (2× Standard) from the " + (b.tierRequestedTokens ? "requested" : "served") + " speed.")
+        if (b.tierAssumedTokens) parts.push(compact(b.tierAssumedTokens) + " tokens have no recorded speed and use Standard rates, so their value may be low.")
+        return parts.join(" ")
+    }
+    function tierSummary(b) {
+        if (!b || !b.tokens) return ""
+        var parts = []
+        if (b.fastTokens) parts.push("Fast rates")
+        if (b.tierAssumedTokens) {
+            var percent = b.tierAssumedTokens / b.tokens * 100
+            parts.push((percent < 1 ? "<1" : Math.round(percent)) + "% speed unknown")
+        }
+        return parts.join(" · ")
+    }
     function valueText(b) { return b.unpricedTokens === b.tokens && b.tokens > 0 ? "Unpriced" : money(b.value) + (b.unpricedTokens ? " + unpriced" : "") }
     function comparisonText() {
         if (!data || selection.hourStart || selection.resetWindow) return ""
@@ -1123,6 +1142,7 @@ Scope {
                     width: scroll.availableWidth
                     spacing: 18
                     Section {
+                        id: pinnedSection
                         sectionId: "pinned"
                         title: root.pinnedLimits.length === 1 ? "Pinned limit" : "Pinned limits"
                         summary: root.pinnedSummary()
@@ -1172,12 +1192,13 @@ Scope {
                         Sub { visible: root.pinSaveFailed; text: "Could not update pinned limit" }
                     }
                     Card {
-                        visible: !root.data || root.data.summary.unpricedTokens > 0 || (root.data.coverage.warnings || []).length > 0
+                        visible: !root.data || root.data.summary.unpricedTokens > 0 || (root.data.coverage.warnings || []).length > 0 || root.tierNote(root.data.summary) !== ""
                         width: parent.width; height: visible ? pricingNote.implicitHeight + 28 : 0
                         Column {
                             id: pricingNote
                             anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 14; spacing: 6
                             Label { width: parent.width; wrapMode: Text.WordWrap; text: root.data ? (root.data.summary.tokens === 0 ? (Object.keys(root.selection).length ? "No activity for this filter in this period. Clear filters to see the rest of the history." : "No activity in this period. Add a history folder in Settings or use a supported coding agent.") : root.data.summary.unpricedTokens ? root.compact(root.data.summary.unpricedTokens)+" tokens have no complete price. API value is a partial estimate." : "All recorded tokens in this view have an API-value estimate.") : "Checking pricing coverage…"; color: root.data && root.data.summary.unpricedTokens ? root.colorFor("claude") : root.ink }
+                            Sub { width: parent.width; wrapMode: Text.WordWrap; visible: text !== ""; text: root.data ? root.tierNote(root.data.summary) : "" }
                             Sub { width: parent.width; wrapMode: Text.WordWrap; text: root.data ? "History on "+(root.data.coverage.machine || "this computer")+" · scanned "+root.when(root.data.coverage.scannedAt)+" · "+(root.data.pricing.coveragePercent===null ? "No activity" : (root.data.summary.unpricedTokens && root.data.pricing.coveragePercent>99.9 ? ">99.9" : root.data.pricing.coveragePercent.toFixed(1))+"% of tokens priced") : "" }
                         }
                     }
@@ -1220,6 +1241,11 @@ Scope {
                                     Sub { text: "API VALUE ESTIMATE"; font.letterSpacing: 1.1 }
                                     Label { text: root.data ? root.valueText(root.data.summary) : "…"; font.pixelSize: 24 }
                                     Sub { text: "Separate from plan charges" }
+                                    Sub {
+                                        width: parent.width; wrapMode: Text.WordWrap
+                                        visible: text !== ""
+                                        text: root.data ? root.tierSummary(root.data.summary) : ""
+                                    }
                                 }
                             }
                             Rectangle { width: parent.width; height: 1; color: root.edge }
@@ -1230,6 +1256,7 @@ Scope {
                             }
                         }
                         Section {
+                            id: accountSection
                             sectionId: "account"
                             title: root.currentAccount ? root.currentAccount.name : ""
                             summary: root.accountSummary()
@@ -1794,6 +1821,7 @@ Scope {
                                 Sub { required property var modelData; width: coverageColumn.width; wrapMode: Text.WordWrap; text: modelData.provider+" / "+modelData.client+" · "+modelData.sessions+" sessions · latest event "+root.when(modelData.lastAt) }
                             }
                             Sub { width: parent.width; wrapMode: Text.WordWrap; text: root.data ? "Pricing: "+root.data.pricing.source+(root.data.pricing.fetchedAtMs?" · "+Qt.formatDateTime(new Date(root.data.pricing.fetchedAtMs),"MMM d, yyyy"):"")+". Estimates use this catalog's rates, not historical billing rates." : "" }
+                            Sub { width: parent.width; wrapMode: Text.WordWrap; text: "Codex API value uses the speed each turn requested, with Fast at 2× Standard. Codex does not record the speed actually served, and turns with no recorded speed use Standard rates. Subscription allowance multipliers are not API prices." }
                             Sub { width: parent.width; wrapMode: Text.WordWrap; text: "Grok, OpenCode, Pi, and Oh My Pi use recorded API estimates when available. Their recorded totals do not provide cache savings. Usage records are message snapshots, aggregated rows, or cloud events, not equivalent request counts. Cursor also retains events with zero reported tokens." }
                             Repeater {
                                 model: root.data ? root.data.pricing.unpriced || [] : []

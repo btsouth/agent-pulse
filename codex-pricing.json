@@ -1,12 +1,13 @@
 {
   "source": "OpenAI API pricing and OpenCode model catalog (models.dev)",
   "url": "https://developers.openai.com/api/docs/pricing",
-  "verifiedAt": "2026-09-29",
+  "verifiedAt": "2026-10-03",
   "notes": [
     "gpt-5.3-codex-spark rates are the published openai entry in the catalog OpenCode uses ($1.75 input, $14 output, $0.175 cached input per million tokens).",
     "codex-auto-review has no published rate anywhere; it is marked internal so its tokens are excluded from the unpriced warning without inventing a price.",
     "GPT-6 Sol and Luna use OpenAI's published Standard rates, including the full-request long-context tier above 272K input tokens.",
-    "GPT-6.1 Sol rates were verified against https://developers.openai.com/api/docs/models/gpt-6.1-sol on 2026-09-29: $2 input, $0.10 cached input, $2.50 cache writes, and $10 output per million tokens. Above 272K input tokens, input and cache rates double and output is 1.5x for the full request."
+    "GPT-6.1 Sol rates were verified against https://developers.openai.com/api/docs/models/gpt-6.1-sol on 2026-09-29: $2 input, $0.10 cached input, $2.50 cache writes, and $10 output per million tokens. Above 272K input tokens, input and cache rates double and output is 1.5x for the full request.",
+    "Fast (service_tier priority) and Flex rates were verified on 2026-10-03 against https://developers.openai.com/api/docs/pricing and the GPT-6.1 Sol, GPT-6 Sol and GPT-6 Luna model pages: Fast is 2x the applicable Standard rate, including the long-context rate, and Flex is 50%. They use the catalog's _priority and _flex key suffixes. Codex subscription allowance multipliers are separate and are not API prices."
   ],
   "models": {
     "codex/gpt-6.1-sol": {
@@ -17,7 +18,23 @@
       "input_cost_per_token_above_272k_tokens": 0.000004,
       "output_cost_per_token_above_272k_tokens": 0.000015,
       "cache_read_input_token_cost_above_272k_tokens": 0.0000002,
-      "cache_creation_input_token_cost_above_272k_tokens": 0.000005
+      "cache_creation_input_token_cost_above_272k_tokens": 0.000005,
+      "input_cost_per_token_priority": 0.000004,
+      "output_cost_per_token_priority": 0.00002,
+      "cache_read_input_token_cost_priority": 0.0000002,
+      "cache_creation_input_token_cost_priority": 0.000005,
+      "input_cost_per_token_above_272k_tokens_priority": 0.000008,
+      "output_cost_per_token_above_272k_tokens_priority": 0.00003,
+      "cache_read_input_token_cost_above_272k_tokens_priority": 0.0000004,
+      "cache_creation_input_token_cost_above_272k_tokens_priority": 0.00001,
+      "input_cost_per_token_flex": 0.000001,
+      "output_cost_per_token_flex": 0.000005,
+      "cache_read_input_token_cost_flex": 0.00000005,
+      "cache_creation_input_token_cost_flex": 0.00000125,
+      "input_cost_per_token_above_272k_tokens_flex": 0.000002,
+      "output_cost_per_token_above_272k_tokens_flex": 0.0000075,
+      "cache_read_input_token_cost_above_272k_tokens_flex": 0.0000001,
+      "cache_creation_input_token_cost_above_272k_tokens_flex": 0.0000025
     },
     "codex/gpt-6-sol": {
       "input_cost_per_token": 0.000002,
@@ -27,7 +44,23 @@
       "input_cost_per_token_above_272k_tokens": 0.000004,
       "output_cost_per_token_above_272k_tokens": 0.000015,
       "cache_read_input_token_cost_above_272k_tokens": 0.0000004,
-      "cache_creation_input_token_cost_above_272k_tokens": 0.000005
+      "cache_creation_input_token_cost_above_272k_tokens": 0.000005,
+      "input_cost_per_token_priority": 0.000004,
+      "output_cost_per_token_priority": 0.00002,
+      "cache_read_input_token_cost_priority": 0.0000004,
+      "cache_creation_input_token_cost_priority": 0.000005,
+      "input_cost_per_token_above_272k_tokens_priority": 0.000008,
+      "output_cost_per_token_above_272k_tokens_priority": 0.00003,
+      "cache_read_input_token_cost_above_272k_tokens_priority": 0.0000008,
+      "cache_creation_input_token_cost_above_272k_tokens_priority": 0.00001,
+      "input_cost_per_token_flex": 0.000001,
+      "output_cost_per_token_flex": 0.000005,
+      "cache_read_input_token_cost_flex": 0.0000001,
+      "cache_creation_input_token_cost_flex": 0.00000125,
+      "input_cost_per_token_above_272k_tokens_flex": 0.000002,
+      "output_cost_per_token_above_272k_tokens_flex": 0.0000075,
+      "cache_read_input_token_cost_above_272k_tokens_flex": 0.0000002,
+      "cache_creation_input_token_cost_above_272k_tokens_flex": 0.0000025
     },
     "codex/gpt-6-luna": {
       "input_cost_per_token": 0.0000001,
@@ -37,7 +70,23 @@
       "input_cost_per_token_above_272k_tokens": 0.0000002,
       "output_cost_per_token_above_272k_tokens": 0.00000075,
       "cache_read_input_token_cost_above_272k_tokens": 0.00000002,
-      "cache_creation_input_token_cost_above_272k_tokens": 0.00000025
+      "cache_creation_input_token_cost_above_272k_tokens": 0.00000025,
+      "input_cost_per_token_priority": 0.0000002,
+      "output_cost_per_token_priority": 0.000001,
+      "cache_read_input_token_cost_priority": 0.00000002,
+      "cache_creation_input_token_cost_priority": 0.00000025,
+      "input_cost_per_token_above_272k_tokens_priority": 0.0000004,
+      "output_cost_per_token_above_272k_tokens_priority": 0.0000015,
+      "cache_read_input_token_cost_above_272k_tokens_priority": 0.00000004,
+      "cache_creation_input_token_cost_above_272k_tokens_priority": 0.0000005,
+      "input_cost_per_token_flex": 0.00000005,
+      "output_cost_per_token_flex": 0.00000025,
+      "cache_read_input_token_cost_flex": 0.000000005,
+      "cache_creation_input_token_cost_flex": 0.0000000625,
+      "input_cost_per_token_above_272k_tokens_flex": 0.0000001,
+      "output_cost_per_token_above_272k_tokens_flex": 0.000000375,
+      "cache_read_input_token_cost_above_272k_tokens_flex": 0.00000001,
+      "cache_creation_input_token_cost_above_272k_tokens_flex": 0.000000125
     },
     "codex/gpt-5.3-codex-spark": {
       "input_cost_per_token": 0.00000175,

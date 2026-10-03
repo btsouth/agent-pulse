@@ -56,7 +56,7 @@ with tempfile.TemporaryDirectory(prefix='usage-dashboard-demo-') as tmp:
     ledger=c.Ledger(c.STATE/'usage.sqlite');rng=random.Random(7);now=dt.datetime.now().astimezone()
     for offset in range(7):
         date=now.date()-dt.timedelta(days=offset)
-        for provider,model in [('codex','gpt-4.1'),('claude','claude-sonnet-4-20250514'),('opencode-go','glm-5.3-flash'),('grok','grok-demo'),('gemini','gemini-3.8-flash'),('opencode','example-model'),('pi','example-model'),('omp','example-model'),('muse','muse-spark-1.3-contributor'),('ollama-cloud','deepseek-v4.1-flash'),('commandcode','deepseek/deepseek-v4.1-flash'),('clinepass','cline-pass/deepseek-v4.1-flash'),('cursor','composer-2.5')]:
+        for provider,model in [('codex','gpt-6.1-sol'),('claude','claude-sonnet-4-20250514'),('opencode-go','glm-5.3-flash'),('grok','grok-demo'),('gemini','gemini-3.8-flash'),('opencode','example-model'),('pi','example-model'),('omp','example-model'),('muse','muse-spark-1.3-contributor'),('ollama-cloud','deepseek-v4.1-flash'),('commandcode','deepseek/deepseek-v4.1-flash'),('clinepass','cline-pass/deepseek-v4.1-flash'),('cursor','composer-2.5')]:
             count=rng.randint(15,50)
             for index in range(count):
                 # Exercise the entire day, including empty hours, in UI captures.
@@ -72,6 +72,9 @@ with tempfile.TemporaryDirectory(prefix='usage-dashboard-demo-') as tmp:
                     entry['reportedValue'] = round((entry['input'] + entry['output']) * 0.00001, 6)
                 if provider in ('ollama-cloud', 'commandcode', 'clinepass'):
                     entry['timePrecision'] = 'session'
+                if provider == 'codex':
+                    # Fast, Standard, and unrecorded speeds in one session.
+                    entry['requestedServiceTier'] = ('priority', 'default', None)[index % 3]
                 ledger.put(entry, base/('work' if index % 2 else 'local')/provider/'sessions/demo.jsonl')
     ledger.db.execute("UPDATE events SET reportedCostTicks=120000000,modelCalls=3 WHERE provider='grok'")
     ledger.db.execute("UPDATE events SET reportedValue=0.012,apiProvider='example-provider' WHERE provider IN ('opencode','pi','omp')")
