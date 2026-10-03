@@ -14,6 +14,7 @@ import time
 ROOT=Path(__file__).resolve().parent
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--view', choices=['overview', 'settings', 'accounts', 'account', 'reset', 'today', 'hour', 'filters', 'sources', 'breakdown', 'collapsed'], default='overview')
+parser.add_argument('--update-available', action='store_true', help='show a synthetic update notice')
 parser.add_argument('--capture',type=Path,help='render a PNG offscreen and exit')
 parser.add_argument('--theme', choices=['dark', 'light'], default='dark', help='synthetic preview palette')
 parser.add_argument('--clock-format', choices=['12', '24'], default='12', help='synthetic Omarchy bar clock format')
@@ -38,6 +39,8 @@ with tempfile.TemporaryDirectory(prefix='usage-dashboard-demo-') as tmp:
         theme.write_text('background = "#faf7f0"\nforeground = "#292d32"\naccent = "#28654a"\nlighter_background = "#dce5df"\n')
     providers=[p for p in (args.agents.split(',') if args.agents else c.PROVIDERS) if p in c.PROVIDERS] or list(c.PROVIDERS)
     c.atomic_json(c.CONFIG, c.DEFAULTS | {'enabled': providers, 'accounts': [{'id':'work','label':'Work','directories':[{'provider':p,'path':str(base/'work'/p)} for p in providers]}]})
+    if args.update_available:
+        c.atomic_json(c.STATE / 'update.json', {'latest': '9.0.0', 'attemptedAt': time.time()})
     for provider, name, label, percent, days in [
         ('codex', 'Codex limits', 'Weekly (7-day)', 0.26, 2),
         ('claude', 'Claude', 'Weekly (7-day)', 0.58, 3),
