@@ -31,46 +31,25 @@ elif command -v omarchy-agent-usage-update >/dev/null 2>&1; then
   timeout 60 omarchy-agent-usage-update "$@" || true
 fi
 
-if [[ "$limits_only" == true && "${#agent_ids[@]}" -gt 0 ]]; then
-  run_claude=false
-  run_codex=false
-  for id in "${agent_ids[@]}"; do
-    if [[ "$id" == claude ]]; then run_claude=true; fi
-    case "$id" in codex|codex-*) run_codex=true ;; esac
-  done
-  # A targeted limits refresh skips the history scan. The panel uses this
-  # path to keep Claude limits current between full refreshes.
-  if [[ "$run_claude" == true ]]; then
-    if [[ "${#force[@]}" -gt 0 ]]; then
-      python3 "$project_dir/claude_limits.py" "${force[@]}" || true
-    else
-      python3 "$project_dir/claude_limits.py" || true
-    fi
-  fi
-  if [[ "$run_codex" == true ]]; then
-    # Repair the intermittent Codex app-server timeout in Omarchy's collector.
-    python3 "$project_dir/codex_limits.py" || true
-  fi
-  status=0
-else
-  # Omarchy's Claude collector just rewrote claude.json without banked limit
-  # resets. Add them back first: this usually answers from its cache, so the
-  # panel barely sees the record without them.
-  if [[ "${#force[@]}" -gt 0 ]]; then
-    python3 "$project_dir/claude_limits.py" "${force[@]}" || true
-  else
-    python3 "$project_dir/claude_limits.py" || true
-  fi
-  # Repair the intermittent Codex app-server timeout in Omarchy's collector.
-  # Also collect purchased ChatGPT credit balances for each configured account.
-  python3 "$project_dir/codex_limits.py" || true
-  status=0
-  if [[ "${#force[@]}" -gt 0 ]]; then
-    python3 "$project_dir/collector.py" scan "${force[@]}" || status=$?
-  else
-    python3 "$project_dir/collector.py" scan || status=$?
-  fi
-fi
+# A targeted limits refresh (the panel's Claude timer, or a retry for one
+# agent) skips the history scan and the helpers for agents it did not name.
+targeted=false
+if [[ "$limits_only" == true && ${#agent_ids[@]} -gt 0 ]]; then targeted=true; fi
+wants() {
+  [[ $targeted == false ]] && return 0
+  local id
+  for id in "${agent_ids[@]}"; do [[ $id == "$1" || $id == "$1"-* ]] && return 0; done
+  return 1
+}
+# Omarchy's Claude collector just rewrote claude.json without banked limit
+# resets. Add them back first: this usually answers from its cache, so the
+# panel barely sees the record without them.
+if wants claude; then python3 "$project_dir/claude_limits.py" "${force[@]}" || true; fi
+# Repair the intermittent Codex app-server timeout in Omarchy's collector.
+# Also collect purchased ChatGPT credit balances for each configured account.
+if wants codex; then python3 "$project_dir/codex_limits.py" || true; fi
+status=0
+if [[ $targeted == false ]]; then python3 "$project_dir/collector.py" scan "${force[@]}" || status=$?; fi
 # Reset notifications ride every refresh path, timer and panel alike.
 if command -v omarchy-usage-dashboard-notify-resets >/dev/null 2>&1; then
   omarchy-usage-dashboard-notify-resets || true
