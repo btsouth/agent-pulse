@@ -39,16 +39,26 @@ def claude_dir():
     return Path(os.path.expandvars(os.path.expanduser(os.environ.get('CLAUDE_CONFIG_DIR') or '~/.claude')))
 
 
-def shared_reading(folder):
+def shared_config_dir(folder):
+    return os.path.abspath(os.path.expanduser(str(folder)))
+
+
+def shared_file(folder, suffix):
+    """Return one of a Claude login's shared cache paths."""
+    home = Path.home()
+    cache = Path(os.environ.get('XDG_CACHE_HOME') or home / '.cache')
+    if not cache.is_absolute():
+        cache = home / '.cache'
+    config_dir = shared_config_dir(folder)
+    name = re.sub(r'[^A-Za-z0-9._-]+', '-', config_dir.lstrip('/'))
+    return cache / 'claude-usage' / (name + suffix)
+
+
+def shared_reading(folder, max_age=SHARE_FRESH_SECONDS):
     """Return (usage, fetched_at seconds) from T3 Code's shared cache."""
     try:
-        home = Path.home()
-        cache = Path(os.environ.get('XDG_CACHE_HOME') or home / '.cache')
-        if not cache.is_absolute():
-            cache = home / '.cache'
-        config_dir = os.path.abspath(os.path.expanduser(str(folder)))
-        name = re.sub(r'[^A-Za-z0-9._-]+', '-', config_dir.lstrip('/'))
-        payload = json.loads((cache / 'claude-usage' / (name + '.json')).read_text())
+        config_dir = shared_config_dir(folder)
+        payload = json.loads(shared_file(folder, '.json').read_text())
         usage = payload.get('usage')
         fetched_at_ms = payload.get('fetchedAtMs')
         if payload.get('configDir') != config_dir:
@@ -58,11 +68,31 @@ def shared_reading(folder):
         if not isinstance(fetched_at_ms, (int, float)) or isinstance(fetched_at_ms, bool):
             return None
         fetched_at = fetched_at_ms / 1000
-        if not 0 <= time.time() - fetched_at < SHARE_FRESH_SECONDS:
+        if max_age is not None and not 0 <= time.time() - fetched_at < max_age:
             return None
         return usage, fetched_at
     except Exception:
         return None
+
+
+def t3_polling(folder):
+    """Whether T3 Code owns polling for this Claude login."""
+    try:
+        config_dir = shared_config_dir(folder)
+        payload = json.loads(shared_file(folder, '.poll.json').read_text())
+        attempted_at_ms = payload.get('attemptedAtMs')
+        next_attempt_at_ms = payload.get('nextAttemptAtMs')
+        if payload.get('configDir') != config_dir:
+            return False
+        if not isinstance(attempted_at_ms, (int, float)) or isinstance(attempted_at_ms, bool):
+            return False
+        if not isinstance(next_attempt_at_ms, (int, float)) or isinstance(next_attempt_at_ms, bool):
+            return False
+        deadline = max(attempted_at_ms / 1000 + SHARE_FRESH_SECONDS,
+                       next_attempt_at_ms / 1000 + 60)
+        return time.time() < deadline
+    except Exception:
+        return False
 
 
 def access_token(folder):
@@ -162,6 +192,22 @@ def answer(cache, force, folder):
     except (KeyError, TypeError, ValueError):
         age, last = None, None
     stale = last if last and age < STALE_SECONDS else (None, '')
+    if t3_polling(folder):
+        shared = shared_reading(folder, max_age=None)
+        if shared is not None:
+            try:
+                cached_at = float(cached['fetchedAt'])
+            except (KeyError, TypeError, ValueError):
+                cached_at = None
+            if cached_at is None or shared[1] > cached_at:
+                try:
+                    result = banked(shared[0].get('cedar_ember'))
+                except ValueError:
+                    pass
+                else:
+                    save(cache, {'fetchedAt': shared[1], 'count': result[0], 'expiresAt': result[1]})
+                    return result
+        return stale
     if last and not force and age < FRESH_SECONDS:
         return last
     # A rate-limited endpoint said when to come back; even --force waits.
