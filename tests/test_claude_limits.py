@@ -65,7 +65,7 @@ class RefreshTests(unittest.TestCase):
         self.requests = []
 
     def write_share(self, usage, fetched_at_ms=None, config_dir=None, raw=None):
-        self.share_dir.mkdir(parents=True)
+        self.share_dir.mkdir(parents=True, exist_ok=True)
         name = re.sub(r'[^A-Za-z0-9._-]+', '-', str(self.claude).lstrip('/'))
         payload = raw if raw is not None else json.dumps({
             'configDir': config_dir or str(self.claude),
@@ -73,6 +73,17 @@ class RefreshTests(unittest.TestCase):
             'usage': usage,
         })
         (self.share_dir / (name + '.json')).write_text(payload)
+
+    def write_poll(self, attempted_at_ms=None, next_attempt_at_ms=None, config_dir=None, raw=None):
+        self.share_dir.mkdir(parents=True, exist_ok=True)
+        name = re.sub(r'[^A-Za-z0-9._-]+', '-', str(self.claude).lstrip('/'))
+        payload = raw if raw is not None else json.dumps({
+            'configDir': config_dir or str(self.claude),
+            'attemptedAtMs': attempted_at_ms,
+            'status': 'rate_limited',
+            'nextAttemptAtMs': next_attempt_at_ms,
+        })
+        (self.share_dir / (name + '.poll.json')).write_text(payload)
 
     def run_main(self, argv=(), body=None, error=None):
         def response(req, timeout):
@@ -121,6 +132,45 @@ class RefreshTests(unittest.TestCase):
         self.write_share(body, int(time.time() * 1000), config_dir=str(self.root / '.other'))
         self.assertEqual(self.run_main(body=body)['resetCreditsAvailable'], 1)
         self.assertEqual(len(self.requests), 1)
+
+    def test_t3_polling_uses_stale_shared_reading_without_request(self):
+        body = {'cedar_ember': {'eligible': True, 'grants': [GRANT]}}
+        self.cache.parent.mkdir(parents=True)
+        self.cache.write_text(json.dumps({'fetchedAt': time.time() - 600, 'count': 4, 'expiresAt': ''}))
+        self.write_share(body, int((time.time() - 181) * 1000))
+        self.write_poll(int(time.time() * 1000), int(time.time() * 1000))
+        record = self.run_main(error=OSError('must not fetch'))
+        self.assertEqual(record['resetCreditsAvailable'], 1)
+        self.assertEqual(self.requests, [])
+
+    def test_t3_polling_keeps_cached_answer_without_share(self):
+        self.cache.parent.mkdir(parents=True)
+        self.cache.write_text(json.dumps({'fetchedAt': time.time() - 600, 'count': 2, 'expiresAt': ''}))
+        self.write_poll(int(time.time() * 1000), int(time.time() * 1000))
+        record = self.run_main(error=OSError('must not fetch'))
+        self.assertEqual(record['resetCreditsAvailable'], 2)
+        self.assertEqual(self.requests, [])
+
+    def test_expired_t3_poll_file_falls_back_to_fetch(self):
+        body = {'cedar_ember': {'eligible': True, 'grants': [GRANT]}}
+        self.write_poll(int((time.time() - 1000) * 1000), int((time.time() - 1000) * 1000))
+        self.assertEqual(self.run_main(body=body)['resetCreditsAvailable'], 1)
+        self.assertEqual(len(self.requests), 1)
+
+    def test_t3_poll_file_for_another_config_is_ignored(self):
+        body = {'cedar_ember': {'eligible': True, 'grants': [GRANT]}}
+        self.write_poll(int(time.time() * 1000), int(time.time() * 1000),
+                        config_dir=str(self.root / '.other'))
+        self.assertEqual(self.run_main(body=body)['resetCreditsAvailable'], 1)
+        self.assertEqual(len(self.requests), 1)
+
+    def test_t3_poll_backoff_keeps_ownership_after_attempt_window(self):
+        self.cache.parent.mkdir(parents=True)
+        self.cache.write_text(json.dumps({'fetchedAt': time.time() - 600, 'count': 3, 'expiresAt': ''}))
+        self.write_poll(int((time.time() - 1000) * 1000), int((time.time() + 3600) * 1000))
+        record = self.run_main(error=OSError('must not fetch'))
+        self.assertEqual(record['resetCreditsAvailable'], 3)
+        self.assertEqual(self.requests, [])
 
     def test_malformed_shared_reading_is_ignored(self):
         body = {'cedar_ember': {'eligible': True, 'grants': [GRANT]}}

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.10.4 - 2026-10-06
+
+- Defer Claude limit polling to T3 Code while it reports an active poll, avoiding rate-limit conflicts on the same login.
+
 ## 1.10.3 - 2026-10-06
 
 - Reuse a recent Claude usage reading shared by T3 Code instead of probing Anthropic's rate-limited endpoint when both run on the same login.
