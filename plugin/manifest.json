@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "community.ai-usage-dashboard",
   "name": "Agent Pulse",
-  "version": "1.10.2",
+  "version": "1.10.3",
   "author": "Tyler South",
   "license": "MIT",
   "description": "AI agent usage, account limits, token history, and API value estimates.",
