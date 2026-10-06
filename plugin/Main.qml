@@ -187,6 +187,10 @@ Item {
   // -------------------------------------------------------------- refresh
 
   property int refreshIntervalSec: Math.max(30, Number(setting("refreshIntervalSec", 900)))
+  property int limitsRefreshIntervalSec: {
+    var configured = Number(setting("limitsRefreshIntervalSec", 0))
+    return configured > 0 ? Math.max(30, configured) : 0
+  }
   property string pendingUpdateKind: ""
 
   Timer {
@@ -195,6 +199,25 @@ Item {
     repeat: true
     triggeredOnStart: true
     onTriggered: root.runUpdate("normal")
+  }
+
+  // A recent reading can come from the same shared cache T3 Code uses, so
+  // Claude limits can refresh between full scans without another API read.
+  Timer {
+    id: limitsRefreshTimer
+    interval: root.limitsRefreshIntervalSec * 1000
+    running: root.limitsRefreshIntervalSec > 0
+    repeat: true
+    onTriggered: {
+      if (updateProcess.running) return
+      var ids = []
+      for (var i = 0; i < agents.length; i++) {
+        var record = agents[i] ? agents[i].record : null
+        var id = record ? String(record.id || "") : ""
+        if ((id === "claude" || id.indexOf("claude-") === 0) && providerEnabled(id)) ids.push(id)
+      }
+      if (ids.length > 0) root.runUpdate("limits", ids)
+    }
   }
 
   Process {

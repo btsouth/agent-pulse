@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.10.3 - 2026-10-06
+
+- Reuse a recent Claude usage reading shared by T3 Code instead of probing Anthropic's rate-limited endpoint when both run on the same login.
+- Add an opt-in `limitsRefreshIntervalSec` setting to refresh Claude limits on a separate timer without rescanning history.
+
 ## 1.10.2 - 2026-10-05
 
 - Stop checking OpenCode Go quota in the background when OpenCode Go is turned off in Settings. The bar record for it is no longer rewritten either.

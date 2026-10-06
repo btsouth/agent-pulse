@@ -3,6 +3,7 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 import tempfile
 import time
 import unittest
@@ -57,9 +58,21 @@ class RefreshTests(unittest.TestCase):
         self.record = usage / 'claude.json'
         self.record.write_text(json.dumps({'id': 'claude', 'limits': []}))
         self.cache = self.root / 'cache/omarchy-usage-dashboard/claude-resets.json'
+        self.claude = claude
+        self.share_dir = self.root / 'cache/claude-usage'
         self.env = {'HOME': str(self.root), 'XDG_STATE_HOME': str(self.root / 'state'),
                     'XDG_CACHE_HOME': str(self.root / 'cache'), 'CLAUDE_CONFIG_DIR': str(claude)}
         self.requests = []
+
+    def write_share(self, usage, fetched_at_ms=None, config_dir=None, raw=None):
+        self.share_dir.mkdir(parents=True)
+        name = re.sub(r'[^A-Za-z0-9._-]+', '-', str(self.claude).lstrip('/'))
+        payload = raw if raw is not None else json.dumps({
+            'configDir': config_dir or str(self.claude),
+            'fetchedAtMs': fetched_at_ms,
+            'usage': usage,
+        })
+        (self.share_dir / (name + '.json')).write_text(payload)
 
     def run_main(self, argv=(), body=None, error=None):
         def response(req, timeout):
@@ -89,6 +102,31 @@ class RefreshTests(unittest.TestCase):
         self.assertEqual(len(self.requests), 1)
         self.run_main(['--force'], body=body)
         self.assertEqual(len(self.requests), 2)
+
+    def test_fresh_shared_reading_is_used_without_a_request_even_when_forced(self):
+        body = {'cedar_ember': {'eligible': True, 'grants': [GRANT]}}
+        self.write_share(body, int(time.time() * 1000))
+        self.assertEqual(self.run_main(body=body)['resetCreditsAvailable'], 1)
+        self.assertEqual(self.run_main(['--force'], body=body)['resetCreditsAvailable'], 1)
+        self.assertEqual(self.requests, [])
+
+    def test_old_shared_reading_falls_back_to_fetch(self):
+        body = {'cedar_ember': {'eligible': True, 'grants': [GRANT]}}
+        self.write_share(body, int((time.time() - 181) * 1000))
+        self.assertEqual(self.run_main(body=body)['resetCreditsAvailable'], 1)
+        self.assertEqual(len(self.requests), 1)
+
+    def test_shared_reading_for_another_config_is_ignored(self):
+        body = {'cedar_ember': {'eligible': True, 'grants': [GRANT]}}
+        self.write_share(body, int(time.time() * 1000), config_dir=str(self.root / '.other'))
+        self.assertEqual(self.run_main(body=body)['resetCreditsAvailable'], 1)
+        self.assertEqual(len(self.requests), 1)
+
+    def test_malformed_shared_reading_is_ignored(self):
+        body = {'cedar_ember': {'eligible': True, 'grants': [GRANT]}}
+        self.write_share(None, raw='not json')
+        self.assertEqual(self.run_main(body=body)['resetCreditsAvailable'], 1)
+        self.assertEqual(len(self.requests), 1)
 
     def test_failed_read_keeps_a_recent_answer_then_goes_unknown(self):
         self.cache.parent.mkdir(parents=True)

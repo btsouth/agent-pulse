@@ -16,7 +16,7 @@ Requires Omarchy 4 with Quickshell, Python 3.11+, and a systemd user session. Ol
 curl -fsSL https://raw.githubusercontent.com/btsouth/agent-pulse/main/install.sh | bash -s -- --with-plugin
 ```
 
-Drop `--with-plugin` for the dashboard without the bar widget. To pin a release, pass the ref to Bash after the pipe: `curl -fsSL https://raw.githubusercontent.com/btsouth/agent-pulse/main/install.sh | OMARCHY_USAGE_REF=v1.10.2 bash -s -- --with-plugin`. Installing from a checkout also works:
+Drop `--with-plugin` for the dashboard without the bar widget. To pin a release, pass the ref to Bash after the pipe: `curl -fsSL https://raw.githubusercontent.com/btsouth/agent-pulse/main/install.sh | OMARCHY_USAGE_REF=v1.10.3 bash -s -- --with-plugin`. Installing from a checkout also works:
 
 ```sh
 git clone https://github.com/btsouth/agent-pulse.git
@@ -77,12 +77,14 @@ The widget reads its settings from its entry in `bar.layout` in `~/.config/omarc
   "id": "community.ai-usage-dashboard",
   "providerOrder": ["codex", "commandcode", "clinepass"],
   "extraProviders": ["codex-second"],
+  "limitsRefreshIntervalSec": 60,
   "launchCommands": { "codex": "codex", "commandcode": "command-code" }
 }
 ```
 
 - **providerOrder** sets the order the bar and panel walk providers in. Ids not listed follow alphabetically, so an agent nobody listed still appears.
 - **extraProviders** admits providers the dashboard does not collect itself. Write an upstream-format record named `<id>.json` into `~/.local/state/omarchy/agents/usage/` — the same directory Omarchy's collectors use — and the widget picks it up, with the record's own `name` as its label. Whoever writes the record owns the collecting.
+- **limitsRefreshIntervalSec** refreshes Claude limits on that interval without rescanning history. It is off at 0, values below 30 are treated as 30, and Anthropic allows roughly one usage request a minute per login.
 - **launchCommands** maps a provider id to the command right-click launches in a terminal. Providers without an entry fall back to Omarchy's agent picker.
 - **alwaysShow** keeps a provider on the bar before it has numbers. Unlike the keys above it lives in the settings panel's own map, per provider: `settings.providers.<id>.alwaysShow`, not a top-level key.
 

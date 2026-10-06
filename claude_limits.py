@@ -30,11 +30,39 @@ USAGE_URL = 'https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=
 # A fresh answer is reused without asking; after a failed read the last answer
 # stands a while longer before the count becomes unknown.
 FRESH_SECONDS = 300
+# T3 Code keeps a recent reading per Claude login in a shared cache.
+SHARE_FRESH_SECONDS = 180
 STALE_SECONDS = 1800
 
 
 def claude_dir():
     return Path(os.path.expandvars(os.path.expanduser(os.environ.get('CLAUDE_CONFIG_DIR') or '~/.claude')))
+
+
+def shared_reading(folder):
+    """Return (usage, fetched_at seconds) from T3 Code's shared cache."""
+    try:
+        home = Path.home()
+        cache = Path(os.environ.get('XDG_CACHE_HOME') or home / '.cache')
+        if not cache.is_absolute():
+            cache = home / '.cache'
+        config_dir = os.path.abspath(os.path.expanduser(str(folder)))
+        name = re.sub(r'[^A-Za-z0-9._-]+', '-', config_dir.lstrip('/'))
+        payload = json.loads((cache / 'claude-usage' / (name + '.json')).read_text())
+        usage = payload.get('usage')
+        fetched_at_ms = payload.get('fetchedAtMs')
+        if payload.get('configDir') != config_dir:
+            return None
+        if not isinstance(usage, dict):
+            return None
+        if not isinstance(fetched_at_ms, (int, float)) or isinstance(fetched_at_ms, bool):
+            return None
+        fetched_at = fetched_at_ms / 1000
+        if not 0 <= time.time() - fetched_at < SHARE_FRESH_SECONDS:
+            return None
+        return usage, fetched_at
+    except Exception:
+        return None
 
 
 def access_token(folder):
@@ -113,6 +141,15 @@ def fetch(folder):
 
 def answer(cache, force, folder):
     """(count, expiry), from the cache while it is fresh; count None when unknown."""
+    shared = shared_reading(folder)
+    if shared is not None:
+        try:
+            result = banked(shared[0].get('cedar_ember'))
+        except ValueError:
+            pass
+        else:
+            save(cache, {'fetchedAt': shared[1], 'count': result[0], 'expiresAt': result[1]})
+            return result
     try:
         cached = json.loads(cache.read_text())
     except (OSError, ValueError):
