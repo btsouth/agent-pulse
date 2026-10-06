@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.10.5 - 2026-10-06
+
+- Count OpenCode v2 usage. OpenCode 2.x stores messages in new tables, so usage after the upgrade was missing; messages carried over from v1 still count once.
+
 ## 1.10.4 - 2026-10-06
 
 - Defer Claude limit polling to T3 Code while it reports an active poll, avoiding rate-limit conflicts on the same login.

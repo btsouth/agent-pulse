@@ -1229,14 +1229,32 @@ class Ledger:
                     conn = sqlite3.connect(opencode.resolve().as_uri() + '?mode=ro', uri=True, timeout=3)
                     # Metric fields only. Go has its own card and stable IDs;
                     # other routes stay under OpenCode and never enter Go totals.
-                    query = """SELECT m.id,m.session_id,m.time_created,s.directory,
-                      json_extract(m.data,'$.modelID'),json_extract(m.data,'$.providerID'),
-                      json_extract(m.data,'$.tokens'),json_extract(m.data,'$.cost')
-                      FROM message m LEFT JOIN session s ON s.id=m.session_id
-                      WHERE json_extract(m.data,'$.role')='assistant' """
-                    for mid, sid, ts, project, model, route, raw, cost in conn.execute(query):
-                        self.put(opencode_record(mid, sid, ts, project, model, route,
-                                                 json.loads(raw or '{}'), cost, default_provider), opencode.resolve())
+                    # A database can carry the v1 tables, the v2 tables, or both,
+                    # so each query runs only when its table is present.
+                    tables = {row[0] for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'")}
+                    queries = []
+                    if 'message' in tables:
+                        queries.append("""SELECT m.id,m.session_id,m.time_created,s.directory,
+                          json_extract(m.data,'$.modelID'),json_extract(m.data,'$.providerID'),
+                          json_extract(m.data,'$.tokens'),json_extract(m.data,'$.cost')
+                          FROM message m LEFT JOIN session s ON s.id=m.session_id
+                          WHERE json_extract(m.data,'$.role')='assistant' """)
+                    if 'session_message' in tables:
+                        # OpenCode v2 writes new messages to session_message and
+                        # migrated the v1 rows with their original ids, so a row
+                        # present in both tables upserts once under the same id.
+                        directory = 's.directory' if 'session_v2' in tables else 'NULL'
+                        join = 'LEFT JOIN session_v2 s ON s.id=m.session_id' if 'session_v2' in tables else ''
+                        queries.append(f"""SELECT m.id,m.session_id,m.time_created,{directory},
+                          json_extract(m.data,'$.model.id'),json_extract(m.data,'$.model.providerID'),
+                          json_extract(m.data,'$.tokens'),json_extract(m.data,'$.cost')
+                          FROM session_message m {join}
+                          WHERE m.type='assistant' """)
+                    for query in queries:
+                        for mid, sid, ts, project, model, route, raw, cost in conn.execute(query):
+                            self.put(opencode_record(mid, sid, ts, project, model, route,
+                                                     json.loads(raw or '{}'), cost, default_provider), opencode.resolve())
                     if local_only: self.remember_database(opencode)
                 except (sqlite3.Error, ValueError, TypeError, AttributeError):
                     source['readErrors'] = 1

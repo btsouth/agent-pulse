@@ -199,6 +199,74 @@ class CollectorTests(unittest.TestCase):
         db.commit()
         self.assertEqual(self.run_pulse()['tokens'], 150)
 
+    def opencode_v2_db(self, path=None):
+        path = path or self.root / 'data/opencode/opencode.db'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        db = sqlite3.connect(path)
+        self.addCleanup(db.close)
+        db.execute('CREATE TABLE session_v2 (id TEXT, directory TEXT)')
+        db.execute('CREATE TABLE session_message (id TEXT, session_id TEXT, type TEXT, '
+                   'seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT)')
+        db.execute('INSERT INTO session_v2 VALUES (?,?)', ('session', '/project'))
+        return db
+
+    def test_pulse_counts_opencode_v2_messages(self):
+        db = self.opencode_v2_db()
+        usage = {'model': {'id': 'test-model', 'providerID': 'opencode'},
+                 'tokens': {'input': 100, 'output': 20}}
+        db.execute('INSERT INTO session_message VALUES (?,?,?,?,?,?,?)',
+                   ('v2-message', 'session', 'assistant', 1, int(time.time() * 1000), 0, json.dumps(usage)))
+        db.commit()
+        self.assertEqual(self.run_pulse()['tokens'], 120)
+
+    def test_pulse_dedupes_message_id_present_in_both_tables(self):
+        db = self.opencode_v2_db()
+        ts = int(time.time() * 1000)
+        db.execute('CREATE TABLE session (id TEXT, directory TEXT)')
+        db.execute('CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)')
+        db.execute('INSERT INTO session VALUES (?,?)', ('session', '/project'))
+        v1 = {'role': 'assistant', 'modelID': 'test-model', 'providerID': 'opencode',
+              'tokens': {'input': 100, 'output': 20}}
+        v2 = {'model': {'id': 'test-model', 'providerID': 'opencode'},
+              'tokens': {'input': 100, 'output': 20}}
+        db.execute('INSERT INTO message VALUES (?,?,?,?)', ('shared', 'session', ts, json.dumps(v1)))
+        db.execute('INSERT INTO session_message VALUES (?,?,?,?,?,?,?)',
+                   ('shared', 'session', 'assistant', 1, ts, 0, json.dumps(v2)))
+        db.execute('INSERT INTO session_message VALUES (?,?,?,?,?,?,?)',
+                   ('v2-only', 'session', 'assistant', 2, ts, 0,
+                    json.dumps({'model': {'id': 'test-model', 'providerID': 'opencode'},
+                                'tokens': {'input': 30, 'output': 10}})))
+        db.commit()
+        self.assertEqual(self.run_pulse()['tokens'], 160)
+
+    def test_pulse_reads_opencode_v2_go_route(self):
+        db = self.opencode_v2_db()
+        usage = {'model': {'id': 'deepseek-v4.1-flash', 'providerID': 'opencode-go'},
+                 'tokens': {'input': 100, 'output': 20, 'reasoning': 5,
+                            'cache': {'read': 70, 'write': 0}}}
+        db.execute('INSERT INTO session_message VALUES (?,?,?,?,?,?,?)',
+                   ('go-message', 'session', 'assistant', 1, int(time.time() * 1000), 0, json.dumps(usage)))
+        db.commit()
+        snapshot = self.run_pulse()
+        self.assertEqual(snapshot['providers']['opencode-go']['tokens'], 195)
+        self.assertNotIn('opencode', snapshot['providers'])
+
+    def test_pulse_reads_opencode_v2_wal_changes(self):
+        path = self.root / 'data/opencode/opencode.db'
+        db = self.opencode_v2_db(path)
+        db.execute('PRAGMA journal_mode=WAL')
+        usage = {'model': {'id': 'test-model', 'providerID': 'opencode'},
+                 'tokens': {'input': 100, 'output': 20}}
+        db.execute('INSERT INTO session_message VALUES (?,?,?,?,?,?,?)',
+                   ('v2-message', 'session', 'assistant', 1, int(time.time() * 1000), 0, json.dumps(usage)))
+        db.commit()
+        self.assertEqual(self.run_pulse()['tokens'], 120)
+        self.assertEqual(self.run_pulse()['tokens'], 120)
+        usage['tokens']['output'] = 50
+        db.execute('UPDATE session_message SET data=? WHERE id=?', (json.dumps(usage), 'v2-message'))
+        db.commit()
+        self.assertEqual(self.run_pulse()['tokens'], 150)
+
     def test_codex_repeated_snapshot_cache_and_reasoning(self):
         event = self.codex_event()
         path = self.transcript('session.jsonl', [event, self.codex_event('2026-09-04T12:01:00Z')])
