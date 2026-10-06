@@ -1794,6 +1794,27 @@ class CollectorTests(unittest.TestCase):
         self.assertIsNone(empty['pricing']['coveragePercent'])
         ledger.db.close()
 
+    def test_hourly_snapshot_carries_the_days_value_as_report_prices_it(self):
+        ledger = c.Ledger(self.root / 'value.sqlite')
+        now = dt.datetime(2026, 9, 5, 12).astimezone()
+        for key, model, when, inp in [('a', 'known', '2026-09-05T10:00:00', 100), ('b', 'unknown', '2026-09-05T10:30:00', 200),
+                                      ('c', 'known', '2026-09-05T11:00:00', 300), ('prior', 'known', '2026-09-04T10:00:00', 700)]:
+            ledger.put(c.record(key, 'codex', key, when, model, '', 'CLI', input=inp))
+        # A Fast turn is priced at its tier's rate, in the snapshot as in the report.
+        ledger.put({**c.record('fast', 'codex', 'fast', '2026-09-05T11:30:00', 'known', '', 'CLI', input=50),
+                    'requestedServiceTier': 'priority'})
+        rates = {'source': 'test', 'document': {'known': {'input_cost_per_token': 0.01, 'input_cost_per_token_priority': 0.02}}}
+        with patch.object(c, 'load_rates', return_value=rates):
+            snapshot = c.hourly_snapshot(ledger, now)
+            day = c.report(ledger, c.DEFAULTS, 1, now=now)
+        self.assertEqual((snapshot['tokens'], snapshot['value'], snapshot['unpricedTokens']), (650, 5, 200))
+        self.assertEqual((snapshot['tokens'], snapshot['value'], snapshot['unpricedTokens']),
+                         (day['summary']['tokens'], day['summary']['value'], day['summary']['unpricedTokens']))
+        with patch.object(c, 'load_rates', return_value={'source': 'test', 'document': {}}):
+            unpriced = c.hourly_snapshot(ledger, now)
+        self.assertEqual((unpriced['value'], unpriced['unpricedTokens']), (0, 650))
+        ledger.db.close()
+
     def test_missing_source_does_not_claim_fresh_history(self):
         ledger = c.Ledger(self.root / 'coverage.sqlite')
         with patch.object(c, 'HOME', self.root), patch.dict('os.environ', {
