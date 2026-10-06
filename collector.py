@@ -2727,9 +2727,10 @@ def main():
             atomic_json(STATE / 'hourly-summary.json', snapshot)
             print(json.dumps(snapshot))
         if args.action in ('go', 'scan') and os.getenv('AI_USAGE_DEMO') != '1':
-            go_quota(args.force)
-            if args.action == 'go': ledger.scan(cfg)
-            write_agent_record(ledger, 'opencode-go')
+            if args.action == 'go' or 'opencode-go' in cfg['enabled']:
+                go_quota(args.force)
+                if args.action == 'go': ledger.scan(cfg)
+                write_agent_record(ledger, 'opencode-go')
             if args.action == 'scan' and 'grok' in cfg['enabled']:
                 grok_quota(args.force)
                 write_agent_record(ledger, 'grok')

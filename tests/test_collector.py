@@ -912,6 +912,17 @@ class CollectorTests(unittest.TestCase):
             c.main()
         self.assertTrue(used)
 
+    def test_scan_skips_go_quota_when_disabled(self):
+        with patch.object(c, 'STATE', self.root / 'state'), \
+             patch.object(c, 'CONFIG', self.root / 'settings.json'), \
+             patch.object(c, 'HOME', self.root), \
+             patch.dict('os.environ', self.sandbox_env()), \
+             patch.object(c, 'go_quota', side_effect=AssertionError('disabled source polled')), \
+             patch('sys.argv', ['collector.py', 'scan']):
+            c.save_settings(c.DEFAULTS | {'enabled': ['codex']})
+            c.main()
+        self.assertFalse((self.root / 'agents/usage/opencode-go.json').exists())
+
     def test_cursor_token_missing_warns_and_skips_network(self):
         ledger = c.Ledger(self.root / 'notoken.sqlite')
         with patch.object(c, 'STATE', self.root / 'state'), \
