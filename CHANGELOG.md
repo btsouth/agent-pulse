@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.10.2 - 2026-10-05
+
+- Stop checking OpenCode Go quota in the background when OpenCode Go is turned off in Settings. The bar record for it is no longer rewritten either.
+
 ## 1.10.1 - 2026-10-03
 
 - Price Codex usage at the speed each turn requested. Fast requests use Fast rates, 2x Standard on GPT-6.1 Sol, GPT-6 Sol and GPT-6 Luna, and the cache savings follow the same rates. Codex records the requested speed but not the one the server used, and does not record it for a thread's first turn; those tokens stay at Standard rates and the dashboard says how many there are. The first scan after updating re-reads Codex transcripts once to recover the speeds they recorded; token totals do not change.
