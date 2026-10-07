@@ -1613,6 +1613,11 @@ class CollectorTests(unittest.TestCase):
                         input=10_000, output=1_000, cacheRead=120_000, cacheWrite=5_000, cacheWrite1h=5_000)
         self.assertAlmostEqual(c.price(long, rates)[0],
                                (10_000 * .5 + 1_000 * 2.5 + 120_000 * .05 + 5_000 * 1) / 1e6)
+        # Cache writes are part of the prompt, so they alone can cross the line.
+        edge = c.record('h3', 'claude', 's', 1, 'claude-haiku-5-5', '/p', 'CLI',
+                        input=10_000, output=1_000, cacheRead=90_000, cacheWrite=5_000)
+        self.assertAlmostEqual(c.price(edge, rates)[0],
+                               (10_000 * .5 + 1_000 * 2.5 + 90_000 * .05 + 5_000 * .625) / 1e6)
 
     def test_go_allowance_uses_monthly_window_and_promo(self):
         ledger = c.Ledger(self.root / 'allowance.sqlite')
