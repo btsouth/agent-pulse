@@ -1572,7 +1572,8 @@ def price_detail(r, catalog):
     rate = peak_rate(rate, r['ts'])
     context = r['input'] + r['cacheRead'] + r['cacheWrite']
     suffix = ''
-    for threshold, candidate in [(200000, '_above_200k_tokens'), (256000, '_above_256k_tokens'), (272000, '_above_272k_tokens')]:
+    for threshold, candidate in [(100000, '_above_100k_tokens'), (200000, '_above_200k_tokens'),
+                                 (256000, '_above_256k_tokens'), (272000, '_above_272k_tokens')]:
         if context > threshold and 'input_cost_per_token' + candidate in rate: suffix = candidate
     tier, basis = record_tier(r)
     # Only Codex records a speed, so only its unknown tiers are an assumption

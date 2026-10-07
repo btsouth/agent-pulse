@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.11.1 - 2026-10-07
+
+- Price Claude Sonnet 5.5 cache reads at the new $0.10 per million and add Claude Haiku 5.5, including its higher rates for prompts over 100,000 tokens.
+
 ## 1.11.0 - 2026-10-07
 
 - Add Antigravity as a provider. Token history is read from the Antigravity CLI's conversation databases and from T3 Code's Antigravity sessions, and the Gemini and Claude/GPT 5-hour and weekly limits come from `agy -p /usage`, which uses no allowance.

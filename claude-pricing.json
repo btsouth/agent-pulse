@@ -1,9 +1,11 @@
 {
   "source": "Claude Platform published model pricing",
-  "url": "https://platform.claude.com/docs/en/models/opus-5-5/overview",
-  "verifiedAt": "2026-09-23",
+  "url": "https://platform.claude.com/docs/en/about-claude/pricing",
+  "verifiedAt": "2026-10-07",
   "notes": [
-    "Direct Claude API-equivalent rates per million tokens. The five-minute and one-hour cache writes have separate published rates."
+    "Direct Claude API-equivalent rates per million tokens. The five-minute and one-hour cache writes have separate published rates.",
+    "Cache reads cost 0.05x base input on Opus 5.5 and Sonnet 5.5.",
+    "Haiku 5.5 is priced by prompt length: a request over 100,000 tokens pays the higher rates on every category."
   ],
   "models": {
     "claude/claude-opus-5-5": {
@@ -12,6 +14,25 @@
       "cache_read_input_token_cost": 0.0000002,
       "cache_creation_input_token_cost": 0.000005,
       "cache_creation_input_token_cost_above_1hr": 0.000008
+    },
+    "claude/claude-sonnet-5-5": {
+      "input_cost_per_token": 0.000002,
+      "output_cost_per_token": 0.00001,
+      "cache_read_input_token_cost": 0.0000001,
+      "cache_creation_input_token_cost": 0.0000025,
+      "cache_creation_input_token_cost_above_1hr": 0.000004
+    },
+    "claude/claude-haiku-5-5": {
+      "input_cost_per_token": 0.0000001,
+      "output_cost_per_token": 0.0000005,
+      "cache_read_input_token_cost": 0.00000001,
+      "cache_creation_input_token_cost": 0.000000125,
+      "cache_creation_input_token_cost_above_1hr": 0.0000002,
+      "input_cost_per_token_above_100k_tokens": 0.0000005,
+      "output_cost_per_token_above_100k_tokens": 0.0000025,
+      "cache_read_input_token_cost_above_100k_tokens": 0.00000005,
+      "cache_creation_input_token_cost_above_100k_tokens": 0.000000625,
+      "cache_creation_input_token_cost_above_1hr_above_100k_tokens": 0.000001
     }
   }
 }
