@@ -16,7 +16,7 @@ Requires Omarchy 4 with Quickshell, Python 3.11+, and a systemd user session. Ol
 curl -fsSL https://raw.githubusercontent.com/btsouth/agent-pulse/main/install.sh | bash -s -- --with-plugin
 ```
 
-Drop `--with-plugin` for the dashboard without the bar widget. To pin a release, pass the ref to Bash after the pipe: `curl -fsSL https://raw.githubusercontent.com/btsouth/agent-pulse/main/install.sh | OMARCHY_USAGE_REF=v1.11.0 bash -s -- --with-plugin`. Installing from a checkout also works:
+Drop `--with-plugin` for the dashboard without the bar widget. To pin a release, pass the ref to Bash after the pipe: `curl -fsSL https://raw.githubusercontent.com/btsouth/agent-pulse/main/install.sh | OMARCHY_USAGE_REF=v1.11.1 bash -s -- --with-plugin`. Installing from a checkout also works:
 
 ```sh
 git clone https://github.com/btsouth/agent-pulse.git

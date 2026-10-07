@@ -1598,6 +1598,27 @@ class CollectorTests(unittest.TestCase):
                                input=1_000_000, output=1_000_000, cacheRead=1_000_000)
                 self.assertAlmostEqual(c.price(row, rates)[0], expected)
 
+    def test_claude_5_5_rates_include_cache_cut_and_haiku_prompt_tiers(self):
+        rates = c.load_rates()['document']
+        sonnet = c.record('s', 'claude', 's', 1, 'claude-sonnet-5-5', '/p', 'CLI',
+                          input=1_000_000, output=1_000_000, cacheRead=1_000_000)
+        self.assertAlmostEqual(c.price(sonnet, rates)[0], 2 + 10 + .1)
+        # Haiku 5.5 switches every rate once a single request's prompt passes
+        # 100k tokens, so the band follows each record's own context.
+        short = c.record('h1', 'claude', 's', 1, 'claude-haiku-5-5', '/p', 'CLI',
+                         input=10_000, output=1_000, cacheRead=80_000, cacheWrite=5_000)
+        self.assertAlmostEqual(c.price(short, rates)[0],
+                               (10_000 * .1 + 1_000 * .5 + 80_000 * .01 + 5_000 * .125) / 1e6)
+        long = c.record('h2', 'claude', 's', 1, 'claude-haiku-5-5', '/p', 'CLI',
+                        input=10_000, output=1_000, cacheRead=120_000, cacheWrite=5_000, cacheWrite1h=5_000)
+        self.assertAlmostEqual(c.price(long, rates)[0],
+                               (10_000 * .5 + 1_000 * 2.5 + 120_000 * .05 + 5_000 * 1) / 1e6)
+        # Cache writes are part of the prompt, so they alone can cross the line.
+        edge = c.record('h3', 'claude', 's', 1, 'claude-haiku-5-5', '/p', 'CLI',
+                        input=10_000, output=1_000, cacheRead=90_000, cacheWrite=5_000)
+        self.assertAlmostEqual(c.price(edge, rates)[0],
+                               (10_000 * .5 + 1_000 * 2.5 + 90_000 * .05 + 5_000 * .625) / 1e6)
+
     def test_go_allowance_uses_monthly_window_and_promo(self):
         ledger = c.Ledger(self.root / 'allowance.sqlite')
         ledger.put(c.opencode_record('m1', 's', '2026-09-14T12:00:00Z', '/p', 'deepseek-v4.1-flash', 'opencode-go', {'input': 1_000_000}, 0))
