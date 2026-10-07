@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import select
+import shutil
 import socket
 import struct
 import sqlite3
@@ -31,10 +32,11 @@ PINNED_LIMIT = CONFIG.with_name('pinned-limit.json')
 MAX_PINNED_LIMITS = 3
 PROVIDERS = {'codex': 'Codex', 'claude': 'Claude', 'opencode-go': 'OpenCode Go', 'grok': 'Grok Build',
              'gemini': 'Gemini CLI', 'opencode': 'OpenCode', 'pi': 'Pi', 'omp': 'Oh My Pi', 'muse': 'Muse',
+             'antigravity': 'Antigravity',
              'ollama-cloud': 'Ollama Cloud', 'commandcode': 'CommandCode',
              'clinepass': 'ClinePass', 'cursor': 'Cursor'}
 HOME_KEYS = ('codexHomes', 'claudeHomes', 'grokHomes', 'geminiHomes', 'opencodeHomes', 'piHomes', 'ompHomes',
-             'museHomes', 'commandcodeHomes', 'hermesHomes')
+             'museHomes', 'antigravityHomes', 'commandcodeHomes', 'hermesHomes')
 # Provider ids used by the Hermes agent's own per-model usage table. Hermes
 # bills the same routes this dashboard reads elsewhere, so its ledger is a
 # source, not a separate provider. Two of these are the same product reached
@@ -244,6 +246,7 @@ def history_config(cfg):
     defaults = {'codex': HOME / '.codex', 'claude': HOME / '.claude', 'grok': HOME / '.grok',
                 'gemini': HOME / '.gemini', 'pi': HOME / '.pi/agent', 'omp': HOME / '.omp/agent',
                 'muse': Path(os.getenv('XDG_DATA_HOME', HOME / '.local/share')) / 'muse',
+                'antigravity': HOME / '.gemini/antigravity-cli',
                 'opencode': Path(os.getenv('XDG_DATA_HOME', HOME / '.local/share')) / 'opencode',
                 'commandcode': HOME / '.commandcode', 'hermes': HOME / '.hermes'}
     def add_home(provider, root, aid, label):
@@ -719,6 +722,126 @@ def muse_records(path):
                              output=usage.get('output_tokens'), cacheRead=read,
                              cacheWrite=usage.get('cache_write_tokens'),
                              reasoning=usage.get('reasoning_tokens'))
+
+
+def pb_map(entries):
+    """A repeated protobuf map entry: field 1 is the key, field 2 the value."""
+    result = {}
+    for entry in entries:
+        key = value = None
+        for n, w, v in proto_fields(entry):
+            if n == 1: key = v
+            elif n == 2: value = v
+        if isinstance(key, bytes) and isinstance(value, bytes):
+            result[key.decode('utf-8', 'replace')] = value.decode('utf-8', 'replace')
+    return result
+
+
+def antigravity_generation(blob):
+    """One gen_metadata row as (usage, model, request_id), or None.
+
+    The generation message is field 1. Its field 4 is token usage; field 17.2
+    repeats that exact usage object, so it is read only from field 4 and never
+    both, or every generation would count twice. Field 19 is the model the
+    request actually ran on and field 21 the one the client asked for (a run
+    can be downshifted, e.g. a `-high` request served by `-n`), so usage is
+    attributed to the served model, falling back to the requested one only when
+    the served string is absent. Field 20 carries the map entries; its
+    request_id is the per-generation dedup key.
+    """
+    generation = None
+    for n, w, v in proto_fields(blob):
+        if n == 1 and w == 2: generation = v
+    if generation is None: return None
+    usage = model = requested = request = None
+    maps = []
+    for n, w, v in proto_fields(generation):
+        if n == 4 and w == 2: usage = v
+        elif n == 19 and w == 2: model = v.decode('utf-8', 'replace')
+        elif n == 21 and w == 2: requested = v.decode('utf-8', 'replace')
+        elif n == 20 and w == 2: maps.append(v)
+    if usage is None: return None
+    counts = {n: v for n, w, v in proto_fields(usage) if w == 0}
+    if not counts: return None
+    request = pb_map(maps).get('request_id') or None
+    return counts, model or requested, request
+
+
+def antigravity_step_time(metadata):
+    """A step's creation time from steps.metadata field 1 {seconds, nanos}."""
+    if not metadata: return 0
+    for n, w, v in proto_fields(metadata):
+        if n == 1 and w == 2:
+            for n2, w2, v2 in proto_fields(v):
+                if n2 == 1: return int(v2)
+    return 0
+
+
+def antigravity_project(conn):
+    """The workspace the conversation ran in, from its metadata blob.
+
+    trajectory_metadata_blob field 7 is a `file:///...` URI. The CLI stores the
+    same URI nested one message deeper under field 1. A conversation with no
+    recorded workspace keeps an empty project rather than guessing one.
+    """
+    for (data,) in conn.execute('SELECT data FROM trajectory_metadata_blob'):
+        if not data: continue
+        candidate = ''
+        for n, w, v in proto_fields(data):
+            if n == 7 and w == 2:
+                candidate = v.decode('utf-8', 'replace'); break
+            if n == 1 and w == 2:
+                for n2, w2, v2 in proto_fields(v):
+                    if n2 == 1 and w2 == 2: candidate = v2.decode('utf-8', 'replace')
+        if candidate:
+            return urllib.parse.unquote(candidate[len('file://'):]) if candidate.startswith('file://') else candidate
+    return ''
+
+
+def antigravity_records(path):
+    """Token history from one Antigravity conversation database.
+
+    gen_metadata holds one row per model generation. Generations are numbered
+    independently of steps, so the Nth generation takes the timestamp of the Nth
+    PLANNER_RESPONSE step (step_type 15); a database with no steps falls back to
+    the file's last-modified time and marks those rows session-timed.
+    """
+    try: conn = sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=3)
+    except sqlite3.Error: return
+    try:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if 'gen_metadata' not in tables: return
+        session = path.stem
+        # The CLI and T3 use the same database but a different client label.
+        client = 'T3 Code' if '.t3' in path.parts else 'Antigravity'
+        try: project = antigravity_project(conn) if 'trajectory_metadata_blob' in tables else ''
+        except ValueError: project = ''
+        times = []
+        if 'steps' in tables:
+            for row in conn.execute('SELECT metadata FROM steps WHERE step_type=15 ORDER BY idx'):
+                # A malformed step keeps its slot with no time, so later
+                # generations do not shift onto an earlier generation's step.
+                try: times.append(antigravity_step_time(row[0]))
+                except ValueError: times.append(0)
+        fallback = int(path.stat().st_mtime)
+        for index, (idx, blob) in enumerate(conn.execute('SELECT idx,data FROM gen_metadata ORDER BY idx')):
+            if not blob: continue
+            try: parsed = antigravity_generation(blob)
+            except ValueError: continue
+            if not parsed: continue
+            counts, model, request = parsed
+            have_time = index < len(times) and bool(times[index])
+            stamped = times[index] if have_time else fallback
+            key = digest('antigravity', request) if request else digest('antigravity', session, idx)
+            entry = record(key, 'antigravity', session, stamped, model, project, client,
+                           input=counts.get(2), output=counts.get(3), cacheRead=counts.get(5),
+                           reasoning=counts.get(9))
+            # Output already includes thinking (field 10 is the visible part), so
+            # there is no cache-write count and reasoning stays separate.
+            if not have_time: entry['timePrecision'] = 'session'
+            yield entry
+    finally:
+        conn.close()
 
 
 CURSOR_API = 'https://api2.cursor.sh/aiserver.v1.DashboardService/'
@@ -1302,6 +1425,30 @@ class Ledger:
                 source['readErrors'] = 1
                 warnings.append('Hermes database could not be read; retained previous records.')
 
+        # Antigravity conversations are SQLite, one database per conversation.
+        # The CLI, the legacy IDE folder, and each T3 Code instance keep their
+        # own conversations directory. T3 has no homePath for this driver, so
+        # its per-instance hash folders are found by globbing its data root.
+        antigravity_roots = [str(HOME / '.gemini/antigravity-cli'), str(HOME / '.gemini/antigravity')]
+        antigravity_roots += [str(p) for p in sorted((HOME / '.t3/userdata/providers/antigravity').glob('*/antigravity-acp'))]
+        antigravity_roots += [str(Path(root).expanduser()) for root in cfg.get('antigravityHomes', [])]
+        for root in dict.fromkeys(antigravity_roots):
+            folder = Path(root).expanduser() / 'conversations'
+            files = sorted(folder.glob('*.db'))
+            source = {'provider': 'antigravity', 'path': str(folder), 'files': len(files),
+                      'exists': folder.exists(), 'kind': 'database'}
+            sources.append(source)
+            for path in files:
+                try:
+                    # A conversation keeps writing to WAL between scans, so the
+                    # change check includes the -wal file like OpenCode's.
+                    if not self.database_changed(path): continue
+                    for r in antigravity_records(path): self.put(r, path.resolve())
+                    self.remember_database(path)
+                except (OSError, ValueError, TypeError, AttributeError, sqlite3.Error):
+                    source['readErrors'] = source.get('readErrors', 0) + 1
+                    warnings.append(f'Could not read {path.name}')
+
         if not local_only and 'cursor' in cfg.get('enabled', []) and os.getenv('AI_USAGE_DEMO') != '1':
             csource, cwarnings = cursor_usage(self, force=force)
             sources.append(csource)
@@ -1543,8 +1690,9 @@ def account_quotas():
 def quota(provider):
     if provider in ('opencode', 'pi', 'omp'):
         return {'limits': [], 'error': 'Account limits belong to the underlying provider and are not collected here.'}
-    if provider in ('opencode-go', 'grok', 'muse', 'ollama-cloud', 'commandcode', 'clinepass', 'cursor'):
+    if provider in ('opencode-go', 'grok', 'muse', 'antigravity', 'ollama-cloud', 'commandcode', 'clinepass', 'cursor'):
         try: d = json.loads((STATE / {'opencode-go': 'go-quota.json', 'grok': 'grok-quota.json', 'muse': 'muse-quota.json',
+                                      'antigravity': 'antigravity-quota.json',
                                       'ollama-cloud': 'ollama-quota.json',
                                       'commandcode': 'commandcode-quota.json',
                                       'clinepass': 'clinepass-quota.json',
@@ -1698,6 +1846,56 @@ def muse_quota(force=False):
         cached['error'] = str(exc) if isinstance(exc, QuotaUnavailable) else 'Muse quota unavailable. Check your Muse login.'
     cached['attemptedAt'] = time.time()
     cached['authVersion'] = auth_version
+    atomic_json(path, cached)
+    return cached
+
+
+def antigravity_quota(force=False):
+    """Antigravity's own usage report, read from its CLI.
+
+    `agy -p /usage` is a zero-turn command: it prints the current Gemini and
+    Claude/GPT windows as JSON and costs no quota, so it is asked on the scan
+    cadence like the other command-backed sources. Only display-safe fields
+    enter the cache.
+    """
+    path = STATE / 'antigravity-quota.json'
+    try: cached = json.loads(path.read_text())
+    except (OSError, ValueError): cached = {}
+    if not force and time.time() - cached.get('attemptedAt', 0) < 300: return cached
+    try:
+        # A mise install is run directly: the `agy` shim mise users put on PATH
+        # re-resolves the tool first, which can reach the network and stall
+        # past the timeout before the report is asked for.
+        installed = Path(os.getenv('MISE_DATA_DIR') or HOME / '.local/share/mise') / 'installs/antigravity-cli/latest/agy'
+        binary = str(installed) if installed.exists() else shutil.which('agy')
+        if not binary: raise QuotaUnavailable('Install the Antigravity CLI to read quota.')
+        result = subprocess.run([binary, '-p', '/usage', '--output-format', 'json'],
+                                capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+        if result.returncode != 0: raise ValueError('Antigravity usage command failed.')
+        parsed = json.loads(result.stdout)
+        groups = ((parsed.get('command') or {}).get('data') or {}).get('groups')
+        if not isinstance(groups, list): raise ValueError('Antigravity returned no recognized quota windows.')
+        windows = []
+        for group in groups:
+            if not isinstance(group, dict): continue
+            name = str(group.get('name') or '')
+            prefix = 'Gemini' if 'gemini' in name.casefold() else 'Claude/GPT' if 'claude' in name.casefold() else name
+            for bucket in group.get('buckets') if isinstance(group.get('buckets'), list) else []:
+                if not isinstance(bucket, dict): continue
+                remaining = bucket.get('remaining_fraction')
+                if not isinstance(remaining, (int, float)) or not 0 <= remaining <= 1: continue
+                # The endpoint reports remaining; every other meter stores used.
+                window = str(bucket.get('window') or '')
+                kind = '5-hour' if window == '5h' else 'weekly' if window == 'weekly' else window
+                entry = {'label': (prefix + ' ' + kind).strip(), 'percent': 1 - remaining}
+                reset = bucket.get('reset_time')
+                if reset: entry['resetsAt'] = str(reset)
+                windows.append(entry)
+        if not windows: raise ValueError('Antigravity returned no recognized quota windows.')
+        cached = {'limits': windows, 'updatedAt': dt.datetime.now(dt.timezone.utc).isoformat(), 'error': ''}
+    except Exception as exc:
+        cached['error'] = str(exc) if isinstance(exc, QuotaUnavailable) else 'Antigravity quota unavailable. Run agy to check your login.'
+    cached['attemptedAt'] = time.time()
     atomic_json(path, cached)
     return cached
 
@@ -2764,6 +2962,9 @@ def main():
             if args.action == 'scan' and 'clinepass' in cfg['enabled']:
                 clinepass_quota(args.force)
                 write_agent_record(ledger, 'clinepass')
+            if args.action == 'scan' and 'antigravity' in cfg['enabled']:
+                antigravity_quota(args.force)
+                write_agent_record(ledger, 'antigravity')
 
             if args.action == 'scan' and 'cursor' in cfg['enabled']:
                 cursor_quota(args.force)

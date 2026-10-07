@@ -334,7 +334,7 @@ Item {
   // the collecting. Set it on this widget in shell.json:
   //   "extraProviders": ["codex-second"]
   function isKnownProvider(id) {
-    if (["codex", "claude", "opencode-go", "grok", "gemini", "opencode", "pi", "omp", "muse", "ollama-cloud", "commandcode", "clinepass", "cursor", "fireworks"].indexOf(id) >= 0) return true
+    if (["codex", "claude", "opencode-go", "grok", "gemini", "opencode", "pi", "omp", "muse", "antigravity", "ollama-cloud", "commandcode", "clinepass", "cursor", "fireworks"].indexOf(id) >= 0) return true
     var extra = setting("extraProviders", [])
     if (extra && typeof extra.length === "number") {
       for (var i = 0; i < extra.length; i++) {

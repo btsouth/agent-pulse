@@ -11,6 +11,7 @@ Open Settings, name the default local history group if needed, then choose **Add
 | OpenCode / OpenCode Go | Data folder containing `opencode.db` or `storage/message` |
 | Pi / Oh My Pi | Agent folder containing `sessions` |
 | Muse | Data home containing `sessions` |
+| Antigravity | Agent home containing `conversations` (for example `~/.gemini/antigravity-cli`) |
 | Hermes | Hermes home containing `state.db` (add one entry per route: OpenCode Go, Ollama Cloud, CommandCode, and ClinePass) |
 | Cursor | Cloud usage only; sign in to the Cursor desktop app (no folders to add) |
 
