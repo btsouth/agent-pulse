@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.11.0 - 2026-10-07
+
+- Add Antigravity as a provider. Token history is read from the Antigravity CLI's conversation databases and from T3 Code's Antigravity sessions, and the Gemini and Claude/GPT 5-hour and weekly limits come from `agy -p /usage`, which uses no allowance.
+
 ## 1.10.5 - 2026-10-06
 
 - Count OpenCode v2 usage. OpenCode 2.x stores messages in new tables, so usage after the upgrade was missing; messages carried over from v1 still count once.

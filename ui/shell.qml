@@ -252,6 +252,7 @@ Scope {
         {key:"piHomes",name:"Pi agent folders",example:"/mnt/other-computer/.pi/agent"},
         {key:"ompHomes",name:"Oh My Pi agent folders",example:"/mnt/other-computer/.omp/agent"},
         {key:"museHomes",name:"Muse homes",example:"/mnt/other-computer/.local/share/muse"},
+        {key:"antigravityHomes",name:"Antigravity homes",example:"/mnt/other-computer/.gemini/antigravity-cli"},
         {key:"hermesHomes",name:"Hermes homes",example:"/mnt/other-computer/.hermes"}]
     function providerName(id) { var p = providerOptions.find(p => p.id === id); return p ? p.name : id }
     function accountSources(account) {
@@ -268,7 +269,8 @@ Scope {
             "opencode-go": palette.bright_yellow || "#e5c736", grok: palette.bright_blue || "#9cb8db",
             gemini: palette.bright_magenta || "#c6a0d5", opencode: palette.bright_green || "#a7c080",
             pi: palette.bright_white || palette.bright_foreground || "#d4d4d4", omp: palette.red || "#d88b68",
-            muse: palette.blue || "#7aa2f7", "ollama-cloud": palette.orange || "#a2734b",
+            muse: palette.blue || "#7aa2f7", antigravity: palette.green || "#83c092",
+            "ollama-cloud": palette.orange || "#a2734b",
             "commandcode": palette.bright_green || "#a7c080", "clinepass": palette.cyan || "#2dd5b7",
             cursor: palette.magenta || "#c586c0"})[id] || root.ink
         var color=Qt.darker(raw,1), background=luminance(root.base)

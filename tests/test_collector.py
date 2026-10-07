@@ -785,6 +785,157 @@ class CollectorTests(unittest.TestCase):
             again = c.save_settings(config)
             self.assertEqual(again['museHomes'], ['/mounted/.local/share/muse'])
 
+    # --- Antigravity ------------------------------------------------------
+
+    def pb_varint(self, value):
+        out = b''
+        while True:
+            byte, value = value & 0x7f, value >> 7
+            out += bytes([byte | (0x80 if value else 0)])
+            if not value: return out
+
+    def pb_field(self, number, payload):
+        return self.pb_varint(number << 3 | 2) + self.pb_varint(len(payload)) + payload
+
+    def pb_number(self, number, value):
+        return self.pb_varint(number << 3) + self.pb_varint(value)
+
+    def ag_usage(self, input_, output, cache=0, thinking=0):
+        parts = [self.pb_number(2, input_), self.pb_number(3, output)]
+        if cache: parts.append(self.pb_number(5, cache))
+        if thinking: parts.append(self.pb_number(9, thinking))
+        # Field 10 is the visible part of output; 9 + 10 = 3.
+        return b''.join(parts) + self.pb_number(10, output - thinking)
+
+    def ag_generation(self, usage, model='gemini-3.8-flash-n', request_id=None, requested=None):
+        parts = [self.pb_field(4, usage)]
+        if request_id:
+            parts.append(self.pb_field(20, self.pb_field(1, b'request_id') + self.pb_field(2, request_id.encode())))
+        # Field 17.2 repeats the same usage object and must never be summed in.
+        parts.append(self.pb_field(17, self.pb_field(2, usage)))
+        if model: parts.append(self.pb_field(19, model.encode()))
+        if requested: parts.append(self.pb_field(21, requested.encode()))
+        return self.pb_field(1, b''.join(parts))
+
+    def antigravity_db(self, name, generations, times=None, project='/project'):
+        path = self.root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(path)
+        conn.execute('CREATE TABLE gen_metadata (idx integer PRIMARY KEY, data blob, size integer)')
+        conn.execute('CREATE TABLE steps (idx integer PRIMARY KEY, step_type integer, metadata blob)')
+        conn.execute('CREATE TABLE trajectory_metadata_blob (id text PRIMARY KEY, data blob)')
+        for index, blob in enumerate(generations):
+            conn.execute('INSERT INTO gen_metadata VALUES (?,?,?)', (index, blob, len(blob)))
+        for index, seconds in enumerate(times or []):
+            conn.execute('INSERT INTO steps VALUES (?,?,?)', (index, 15, self.pb_field(1, self.pb_number(1, seconds))))
+        if project:
+            conn.execute('INSERT INTO trajectory_metadata_blob VALUES (?,?)',
+                         ('main', self.pb_field(7, ('file://' + project).encode())))
+        conn.commit(); conn.close()
+        return path
+
+    def test_antigravity_protobuf_mapping_timestamp_and_thinking(self):
+        gen = self.ag_generation(self.ag_usage(1000, 120, cache=30, thinking=100),
+                                 model='claude-opus-5-5-medium', request_id='req-0')
+        path = self.antigravity_db('cli/conversations/conv.db', [gen], times=[1791394360])
+        records = list(c.antigravity_records(path))
+        self.assertEqual(len(records), 1)
+        r = records[0]
+        self.assertEqual((r['provider'], r['session'], r['model'], r['project'], r['client']),
+                         ('antigravity', 'conv', 'claude-opus-5-5-medium', '/project', 'Antigravity'))
+        self.assertEqual(r['ts'], 1791394360)
+        # Input excludes cache reads; output includes thinking, which is also
+        # recorded separately as reasoning. Field 17's duplicate is not counted.
+        self.assertEqual((r['input'], r['output'], r['cacheRead'], r['reasoning']), (1000, 120, 30, 100))
+
+    def test_antigravity_falls_back_to_requested_model(self):
+        # No served model recorded, so the requested id names the generation.
+        gen = self.ag_generation(self.ag_usage(10, 4), model=None, requested='gemini-3.8-flash-high', request_id='req-1')
+        path = self.antigravity_db('cli/conversations/conv.db', [gen], times=[1791394360])
+        self.assertEqual(next(c.antigravity_records(path))['model'], 'gemini-3.8-flash-high')
+
+    def test_antigravity_slash_only_conversation_yields_nothing(self):
+        path = self.antigravity_db('cli/conversations/slash.db', [])
+        self.assertEqual(list(c.antigravity_records(path)), [])
+
+    def test_antigravity_request_id_dedup_merges_copies(self):
+        gen = self.ag_generation(self.ag_usage(1000, 50), request_id='req-dup')
+        first = self.antigravity_db('one/conversations/a.db', [gen], times=[1791394360])
+        second = self.antigravity_db('two/conversations/b.db', [gen], times=[1791394360])
+        ledger = c.Ledger(self.root / 'agy.sqlite')
+        for path in (first, second):
+            for r in c.antigravity_records(path): ledger.put(r, path)
+        self.assertEqual(ledger.db.execute("SELECT COUNT(*),SUM(input),SUM(output) FROM events WHERE provider='antigravity'").fetchone(),
+                         (1, 1000, 50))
+        ledger.db.close()
+
+    def test_antigravity_scan_discovers_t3_hash_root(self):
+        gen = self.ag_generation(self.ag_usage(400, 20), request_id='req-t3')
+        db = self.antigravity_db('.t3/userdata/providers/antigravity/abc123/antigravity-acp/conversations/t3.db',
+                                 [gen], times=[1791394360])
+        ledger = c.Ledger(self.root / 't3.sqlite')
+        with patch.object(c, 'HOME', self.root), patch.dict('os.environ', self.sandbox_env()):
+            ledger.scan(c.DEFAULTS)
+            ledger.scan(c.DEFAULTS)
+        rows = ledger.db.execute("SELECT session,client,input FROM events WHERE provider='antigravity'").fetchall()
+        self.assertEqual(rows, [('t3', 'T3 Code', 400)])
+        ledger.db.close()
+
+    def antigravity_run(self):
+        fixture = Path(__file__).parent / 'fixtures/antigravity-usage.sample.json'
+
+        def fake_run(command, **kwargs):
+            self.assertEqual(command[1:3], ['-p', '/usage'])
+            return subprocess.CompletedProcess(command, 0, fixture.read_text(), '')
+        return fake_run
+
+    def test_antigravity_quota_parses_windows_to_limits(self):
+        binary = self.root / 'agy'
+        binary.write_text('')
+        with patch.object(c, 'STATE', self.root / 'state'), patch.object(c, 'HOME', self.root), \
+             patch.object(c.shutil, 'which', return_value=str(binary)), \
+             patch.object(c.subprocess, 'run', side_effect=self.antigravity_run()) as run:
+            quota = c.antigravity_quota(True)
+            self.assertEqual(run.call_count, 1)
+        self.assertEqual(quota['error'], '')
+        by_label = {w['label']: w for w in quota['limits']}
+        self.assertEqual(set(by_label), {'Gemini weekly', 'Gemini 5-hour', 'Claude/GPT weekly', 'Claude/GPT 5-hour'})
+        self.assertAlmostEqual(by_label['Gemini weekly']['percent'], 1 - 0.9794442057609558)
+        self.assertAlmostEqual(by_label['Gemini 5-hour']['percent'], 1 - 0.9421446919441223)
+        self.assertAlmostEqual(by_label['Claude/GPT weekly']['percent'], 1 - 0.9079403877258301)
+        self.assertAlmostEqual(by_label['Claude/GPT 5-hour']['percent'], 1 - 0.8158807754516602)
+        self.assertEqual(by_label['Gemini weekly']['resetsAt'], '2026-10-14T11:03:19Z')
+        self.assertEqual(c.quota('antigravity')['limits'], quota['limits'])
+
+    def test_antigravity_quota_prefers_mise_install_over_path_shim(self):
+        installed = self.root / '.local/share/mise/installs/antigravity-cli/latest/agy'
+        installed.parent.mkdir(parents=True)
+        installed.write_text('')
+        with patch.object(c, 'STATE', self.root / 'state'), patch.object(c, 'HOME', self.root), \
+             patch.dict('os.environ', {'MISE_DATA_DIR': ''}), \
+             patch.object(c.shutil, 'which', return_value=str(self.root / 'shim/agy')), \
+             patch.object(c.subprocess, 'run', side_effect=self.antigravity_run()) as run:
+            c.antigravity_quota(True)
+        self.assertEqual(run.call_args.args[0][0], str(installed))
+
+    def test_antigravity_quota_missing_binary_reports_install(self):
+        with patch.object(c, 'STATE', self.root / 'state'), patch.object(c, 'HOME', self.root), \
+             patch.object(c.shutil, 'which', return_value=None), patch.object(c.subprocess, 'run') as run:
+            quota = c.antigravity_quota(True)
+            self.assertIn('Install', quota['error'])
+            run.assert_not_called()
+
+    def test_scan_skips_antigravity_quota_when_disabled(self):
+        with patch.object(c, 'STATE', self.root / 'state'), \
+             patch.object(c, 'CONFIG', self.root / 'settings.json'), \
+             patch.object(c, 'HOME', self.root), \
+             patch.dict('os.environ', self.sandbox_env()), \
+             patch.object(c, 'antigravity_quota', side_effect=AssertionError('disabled source polled')), \
+             patch('sys.argv', ['collector.py', 'scan']):
+            c.save_settings(c.DEFAULTS | {'enabled': ['codex']})
+            c.main()
+        self.assertFalse((self.root / 'agents/usage/antigravity.json').exists())
+
     def cursor_fixture(self):
         path = Path(__file__).parent / 'fixtures/cursor-api.sample.json'
         return json.loads(path.read_text())['usageEventsDisplay']

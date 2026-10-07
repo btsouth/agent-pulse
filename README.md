@@ -16,7 +16,7 @@ Requires Omarchy 4 with Quickshell, Python 3.11+, and a systemd user session. Ol
 curl -fsSL https://raw.githubusercontent.com/btsouth/agent-pulse/main/install.sh | bash -s -- --with-plugin
 ```
 
-Drop `--with-plugin` for the dashboard without the bar widget. To pin a release, pass the ref to Bash after the pipe: `curl -fsSL https://raw.githubusercontent.com/btsouth/agent-pulse/main/install.sh | OMARCHY_USAGE_REF=v1.10.5 bash -s -- --with-plugin`. Installing from a checkout also works:
+Drop `--with-plugin` for the dashboard without the bar widget. To pin a release, pass the ref to Bash after the pipe: `curl -fsSL https://raw.githubusercontent.com/btsouth/agent-pulse/main/install.sh | OMARCHY_USAGE_REF=v1.11.0 bash -s -- --with-plugin`. Installing from a checkout also works:
 
 ```sh
 git clone https://github.com/btsouth/agent-pulse.git
@@ -114,6 +114,7 @@ Claude's banked resets are added to the Claude card the same way. Anthropic's us
 | OpenCode | Other model providers used through OpenCode | Not collected |
 | Pi / Oh My Pi | Saved assistant usage | Not collected |
 | Muse | Completed model responses, including subagents | From the existing Muse login |
+| Antigravity | CLI and T3 Code conversations | From the local Antigravity CLI |
 | Ollama Cloud | T3 Code, Hermes agent sessions, and background work | From an Ollama Cloud API key |
 | CommandCode | T3 Code, Hermes agent sessions, and Command Code CLI transcripts | From a CommandCode API key: plan windows and the extra-credit balance |
 | ClinePass | T3 Code and Hermes agent sessions | From a ClinePass API key |
@@ -122,11 +123,11 @@ Claude's banked resets are added to the Claude card the same way. Anthropic's us
 
 Sources with recorded history appear automatically on a fresh install. Use **Settings** to choose which ones to show. OpenCode Go uses your existing API key; no cookie setup is needed. If Grok authentication expires, run `grok login`. Ollama Cloud, CommandCode, and ClinePass may need a key: type it in **Settings**, export `OLLAMA_API_KEY` / `COMMANDCODE_API_KEY` / `CLINE_API_KEY`, or put it in `~/.config/omarchy/ai-usage/ollama.key` / `commandcode.key` / `clinepass.key` (the key file an Ollama CLI install would use is also read, if one exists).
 
-T3 Code's custom provider instances are discovered from `~/.t3/userdata/settings.json`. Their isolated Codex, Claude, and OpenCode histories are read in place, and a CommandCode runtime is attributed to the CommandCode card rather than to Codex.
+T3 Code's custom provider instances are discovered from `~/.t3/userdata/settings.json`. Their isolated Codex, Claude, OpenCode, and Antigravity histories are read in place, and a CommandCode runtime is attributed to the CommandCode card rather than to Codex. Antigravity has no home path in that file, so its T3 conversation folders are found by globbing the T3 data directory.
 
 Hermes records its own per-route totals, and OpenCode Go reaches the same account through two apps now. Both are counted: OpenCode's transcripts carry the per-request detail from the OpenCode client, and Hermes sessions are added from its own ledger. The two share no session or message ids, so nothing is double counted, and the added total reconciles to the agent's own ledger exactly. Hermes rows can additionally be split by what they were for (typed prompts versus title generation, compression, vision, approvals, and background review) in the client breakdown.
 
-Normal ChatGPT, Grok web, and Gemini web conversations are not included. Copilot, Windsurf, and Antigravity are not supported. See [provider coverage](docs/provider-coverage.md) for formats and validation limits.
+Normal ChatGPT, Grok web, and Gemini web conversations are not included. Copilot and Windsurf are not supported. See [provider coverage](docs/provider-coverage.md) for formats and validation limits.
 
 ## Multiple accounts
 

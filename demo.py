@@ -56,14 +56,14 @@ with tempfile.TemporaryDirectory(prefix='usage-dashboard-demo-') as tmp:
     ledger=c.Ledger(c.STATE/'usage.sqlite');rng=random.Random(7);now=dt.datetime.now().astimezone()
     for offset in range(7):
         date=now.date()-dt.timedelta(days=offset)
-        for provider,model in [('codex','gpt-6.1-sol'),('claude','claude-sonnet-4-20250514'),('opencode-go','glm-5.3-flash'),('grok','grok-demo'),('gemini','gemini-3.8-flash'),('opencode','example-model'),('pi','example-model'),('omp','example-model'),('muse','muse-spark-1.3-contributor'),('ollama-cloud','deepseek-v4.1-flash'),('commandcode','deepseek/deepseek-v4.1-flash'),('clinepass','cline-pass/deepseek-v4.1-flash'),('cursor','composer-2.5')]:
+        for provider,model in [('codex','gpt-6.1-sol'),('claude','claude-sonnet-4-20250514'),('opencode-go','glm-5.3-flash'),('grok','grok-demo'),('gemini','gemini-3.8-flash'),('opencode','example-model'),('pi','example-model'),('omp','example-model'),('muse','muse-spark-1.3-contributor'),('antigravity','gemini-3.8-flash-n'),('ollama-cloud','deepseek-v4.1-flash'),('commandcode','deepseek/deepseek-v4.1-flash'),('clinepass','cline-pass/deepseek-v4.1-flash'),('cursor','composer-2.5')]:
             count=rng.randint(15,50)
             for index in range(count):
                 # Exercise the entire day, including empty hours, in UI captures.
                 when=dt.datetime.combine(date,dt.time()).astimezone()+dt.timedelta(minutes=index*1439//max(1,count-1))
                 if when>now:continue
                 entry = c.record(f'{provider}-{offset}-{index}',provider,f'{provider}-{offset}-{index//8}',when.isoformat(),model,
-                    '/demo/'+rng.choice(['website','notes','weather']),'CLI' if provider=='codex' else 'Claude Code' if provider=='claude' else 'Muse' if provider=='muse' else 'Hermes' if provider=='ollama-cloud' else 'Hermes' if provider in ('commandcode','clinepass') else 'Cursor' if provider=='cursor' else 'OpenCode',
+                    '/demo/'+rng.choice(['website','notes','weather']),'CLI' if provider=='codex' else 'Claude Code' if provider=='claude' else 'Muse' if provider=='muse' else 'Antigravity' if provider=='antigravity' else 'Hermes' if provider=='ollama-cloud' else 'Hermes' if provider in ('commandcode','clinepass') else 'Cursor' if provider=='cursor' else 'OpenCode',
                     input=rng.randint(500,2000),output=rng.randint(100,1000),cacheRead=rng.randint(10000,100000))
                 if provider == 'cursor':
                     # Cloud-API shape: token-bearing rows with a list-price
