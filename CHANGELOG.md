@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.11.3 - 2026-10-09
+
+- Show banked resets on every Claude account card, not only the main one. A second Claude record linked to an account folder in Settings, by account id or by matching name, gets the resets of that folder's sign-in. Records linked to no folder still show none.
+
 ## 1.11.2 - 2026-10-08
 
 - Colors work again on Qt 6.12. QtQuick now ships its own `Color` type, which hid the
