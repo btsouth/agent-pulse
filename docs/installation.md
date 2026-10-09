@@ -6,7 +6,7 @@ The quickest install downloads the current archive and runs the same installer:
 curl -fsSL https://raw.githubusercontent.com/btsouth/agent-pulse/main/install.sh | bash -s -- --with-plugin
 ```
 
-Set `OMARCHY_USAGE_REF=v1.11.1` on the Bash side of the pipe to pin a release, and `OMARCHY_USAGE_TARBALL=/path/file.tar.gz` installs a local archive. From a checkout, run `python3 install.py --with-plugin` directly; both paths produce the same installation.
+Set `OMARCHY_USAGE_REF=v1.11.2` on the Bash side of the pipe to pin a release, and `OMARCHY_USAGE_TARBALL=/path/file.tar.gz` installs a local archive. From a checkout, run `python3 install.py --with-plugin` directly; both paths produce the same installation.
 
 The installer runs without sudo. It checks all tracked destinations before changing files, records original files and pending replacements, and writes each replacement atomically. If an install or upgrade is interrupted, rerun it to finish or use `--uninstall` to restore managed originals. This is per-file recovery, not an atomic transaction across all files. It does not modify `/usr/share/omarchy`.
 

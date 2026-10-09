@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.11.2 - 2026-10-08
+
+- Colors work again on Qt 6.12. QtQuick now ships its own `Color` type, which hid the
+  shell's `Color` palette and left colors undefined. The plugin reads it as
+  `Commons.Color`, the same change Omarchy made for its own shell.
+
 ## 1.11.1 - 2026-10-07
 
 - Price Claude Sonnet 5.5 cache reads at the new $0.10 per million and add Claude Haiku 5.5, including its higher rates for prompts over 100,000 tokens.
