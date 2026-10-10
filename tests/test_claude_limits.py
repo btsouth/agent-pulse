@@ -193,6 +193,37 @@ class RefreshTests(unittest.TestCase):
         self.assertEqual(len(self.requests), 1)
         self.assertGreater(json.loads(self.cache.read_text())['retryAt'], time.time() + 100)
 
+    def test_second_account_gets_its_own_resets(self):
+        second = self.root / '.claude2'
+        second.mkdir()
+        (second / '.credentials.json').write_text(json.dumps({'claudeAiOauth': {
+            'accessToken': 'second-token', 'expiresAt': (time.time() + 3600) * 1000}}))
+        settings = self.root / 'config/omarchy/ai-usage/settings.json'
+        settings.parent.mkdir(parents=True)
+        settings.write_text(json.dumps({'accounts': [{'id': 'account-1', 'label': 'Claude Personal',
+                                                      'directories': [{'provider': 'claude', 'path': str(second)}]}]}))
+        usage = self.record.parent
+        (usage / 'claude-second.json').write_text(json.dumps({'id': 'claude-second', 'name': 'Claude Personal'}))
+        (usage / 'claude-third.json').write_text(json.dumps({'id': 'claude-third', 'name': 'Claude Trial'}))
+        self.env['XDG_CONFIG_HOME'] = str(self.root / 'config')
+
+        def response(req, timeout):
+            self.requests.append(req)
+            spent = req.get_header('Authorization') == 'Bearer claude-token'
+            body = {'cedar_ember': {'eligible': True, 'grants': [dict(GRANT, resets_left=0 if spent else 1)]}}
+            return io.BytesIO(json.dumps(body).encode())
+        with patch.dict(os.environ, self.env), \
+                patch.object(claude_limits, 'cli_version', return_value='2.1.280'), \
+                patch.object(claude_limits.request, 'urlopen', side_effect=response):
+            claude_limits.main([])
+        self.assertEqual(json.loads(self.record.read_text())['resetCreditsAvailable'], 0)
+        personal = json.loads((usage / 'claude-second.json').read_text())
+        self.assertEqual(personal['resetCreditsAvailable'], 1)
+        self.assertEqual(personal['resetCreditsExpiresAt'], '2026-10-22T16:00:00+00:00')
+        # A record linked to no account folder is never given another login's count.
+        self.assertNotIn('resetCreditsAvailable', json.loads((usage / 'claude-third.json').read_text()))
+        self.assertEqual(len(self.requests), 2)
+
     def test_expired_sign_in_sends_nothing(self):
         (self.root / '.claude/.credentials.json').write_text(json.dumps({'claudeAiOauth': {
             'accessToken': 'claude-token', 'expiresAt': 1000}}))
