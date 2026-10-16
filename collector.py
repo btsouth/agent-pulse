@@ -2461,6 +2461,11 @@ def hourly_snapshot(ledger, now=None, cfg=None):
     Totals are kept per provider and per agent record. A labelled second login
     is its own record in the panel but shares its provider's table with the
     main login, so the record totals split each provider by account.
+
+    `value` is the estimated API value of the same events `tokens` counts,
+    priced as `report` prices them, and `unpricedTokens` the part of `tokens`
+    no rate covers. Bar widgets can show the day's value from this file
+    instead of running a report.
     """
     cfg = cfg or DEFAULTS
     now = now or dt.datetime.now().astimezone()
@@ -2481,9 +2486,12 @@ def hourly_snapshot(ledger, now=None, cfg=None):
     for key, (provs, account, _) in targets.items():
         for provider in provs: records.setdefault((provider, account), []).append(key)
     resolve, accounts = source_account(cfg), {}
-    total = timed = unplaced = 0
+    total = timed = unplaced = unpriced = 0
+    value_total = 0.0
+    rates = load_rates()
     ledger.db.row_factory = sqlite3.Row
-    for row in ledger.db.execute('SELECT e.provider,e.client,e.timePrecision,e.ts,e.input,e.output,e.cacheRead,e.cacheWrite,'
+    for row in ledger.db.execute('SELECT e.provider,e.client,e.timePrecision,e.ts,e.model,e.apiProvider,e.reportedValue,e.reportedCostTicks,'
+                                 'e.serviceTier,e.requestedServiceTier,e.input,e.output,e.cacheRead,e.cacheWrite,e.cacheWrite1h,'
                                  'group_concat(s.path,char(31)) AS paths '
                                  'FROM events e INDEXED BY events_time LEFT JOIN event_sources s ON s.event_id=e.id '
                                  'WHERE e.ts>=? AND e.ts<=? GROUP BY e.id', (start, end)):
@@ -2501,6 +2509,9 @@ def hourly_snapshot(ledger, now=None, cfg=None):
         total += tokens
         p['tokens'] += tokens
         for m in mine: m['tokens'] += tokens
+        value = price(r, rates['document'])[0]
+        if value is None: unpriced += tokens
+        else: value_total += value
         if not timed_event(r):
             unplaced += tokens
             p['unplacedTokens'] += tokens
@@ -2519,6 +2530,7 @@ def hourly_snapshot(ledger, now=None, cfg=None):
     return {'schemaVersion': 1, 'date': str(day), 'generatedAt': now.timestamp(),
             'timeZone': now.tzname() or '', 'utcOffsetMinutes': int(now.utcoffset().total_seconds() // 60),
             'tokens': total, 'timedTokens': timed, 'unplacedTokens': unplaced,
+            'value': value_total, 'unpricedTokens': unpriced,
             'availableProviders': available_providers, 'providers': providers, 'hours': hours,
             # The same totals for each agent record, so a second login shows
             # its own usage instead of its provider's, and the records with
