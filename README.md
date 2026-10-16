@@ -16,7 +16,7 @@ Requires Omarchy 4 with Quickshell, Python 3.11+, and a systemd user session. Ol
 curl -fsSL https://raw.githubusercontent.com/btsouth/agent-pulse/main/install.sh | bash -s -- --with-plugin
 ```
 
-Drop `--with-plugin` for the dashboard without the bar widget. To pin a release, pass the ref to Bash after the pipe: `curl -fsSL https://raw.githubusercontent.com/btsouth/agent-pulse/main/install.sh | OMARCHY_USAGE_REF=v1.11.2 bash -s -- --with-plugin`. Installing from a checkout also works:
+Drop `--with-plugin` for the dashboard without the bar widget. To pin a release, pass the ref to Bash after the pipe: `curl -fsSL https://raw.githubusercontent.com/btsouth/agent-pulse/main/install.sh | OMARCHY_USAGE_REF=v1.11.3 bash -s -- --with-plugin`. Installing from a checkout also works:
 
 ```sh
 git clone https://github.com/btsouth/agent-pulse.git
@@ -100,7 +100,7 @@ When an external Codex collector supplies a `resetCreditsAvailable` field, the d
 
 The Codex panel and dashboard source details also show purchased **ChatGPT credits remaining** for Work and Codex when the account has a positive balance. Zero or unavailable balances stay hidden. Refresh reads each account's balance from ChatGPT using that Codex home's existing sign-in. Credits used are estimated from observed balance decreases since tracking began, with the start date shown. This is account-wide, including other devices, and is separate from token counts, API value, and banked resets. Top-ups or expirations between refreshes can affect the estimate; earlier credit usage is unavailable. Tracking stays local in `~/.local/state/omarchy/ai-usage/chatgpt-credits.json`. Failed reads preserve the tracking history for the next successful refresh.
 
-Claude's banked resets are added to the Claude card the same way. Anthropic's usage endpoint only lists them for a current Claude Code CLI, so the refresh asks as the installed `claude` version, using the sign-in Claude Code already saved. The token is sent only to Anthropic's usage endpoint. The answer is reused for five minutes because the endpoint rate-limits quickly, and the panel shows when an unspent reset expires.
+Claude's banked resets are added to each Claude card the same way, using the sign-in of the folder linked to that account in Settings. Anthropic's usage endpoint only lists them for a current Claude Code CLI, so the refresh asks as the installed `claude` version, using the sign-in Claude Code already saved. The token is sent only to Anthropic's usage endpoint. The answer is reused for five minutes because the endpoint rate-limits quickly, and the panel shows when an unspent reset expires.
 
 ## Supported sources
 

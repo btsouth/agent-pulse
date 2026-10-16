@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Add Claude's banked usage-limit resets to the Claude record.
+"""Add Claude's banked usage-limit resets to each Claude record.
 
 Anthropic grants Pro and Max accounts resets that clear a usage limit early.
 Omarchy's Claude collector reads the same OAuth usage endpoint, but the resets
@@ -273,15 +273,53 @@ def update(path, count, expiry):
     return True
 
 
+def homes(config, usage):
+    """Map each Claude record to its login folder.
+
+    The main record belongs to the default folder. Another Claude record is
+    linked to a configured account with one Claude folder the way the
+    dashboard links them: by account id, then by a unique matching name.
+    """
+    result = {'claude': claude_dir()}
+    try:
+        accounts = json.loads(config.read_text()).get('accounts') or []
+    except (OSError, ValueError, AttributeError):
+        return result
+    folders = {}
+    for account in accounts if isinstance(accounts, list) else []:
+        if not isinstance(account, dict) or not account.get('id'):
+            continue
+        paths = [item.get('path') for item in account.get('directories') or []
+                 if isinstance(item, dict) and item.get('provider') == 'claude' and item.get('path')]
+        if len(paths) == 1:
+            folders[str(account['id'])] = (str(account.get('label') or '').casefold(), Path(paths[0]).expanduser())
+    for path in sorted(usage.glob('claude[-:]*.json')):
+        key = path.stem
+        try:
+            name = str(json.loads(path.read_text()).get('name') or '').casefold()
+        except (OSError, ValueError, AttributeError):
+            continue
+        matches = [folder for aid, (_, folder) in folders.items() if key in (aid, 'claude:' + aid)]
+        if not matches and name:
+            matches = [folder for label, folder in folders.values() if label == name]
+        if len(matches) == 1:
+            result[key] = matches[0]
+    return result
+
+
 def main(argv=None):
     force = '--force' in (sys.argv[1:] if argv is None else argv)
     home = Path.home()
-    record = Path(os.environ.get('XDG_STATE_HOME', home / '.local/state')) / 'omarchy/agents/usage/claude.json'
-    if not record.exists():
-        return 0
-    cache = Path(os.environ.get('XDG_CACHE_HOME', home / '.cache')) / 'omarchy-usage-dashboard/claude-resets.json'
-    count, expiry = answer(cache, force, claude_dir())
-    update(record, count, expiry)
+    usage = Path(os.environ.get('XDG_STATE_HOME', home / '.local/state')) / 'omarchy/agents/usage'
+    config = Path(os.environ.get('XDG_CONFIG_HOME', home / '.config')) / 'omarchy/ai-usage/settings.json'
+    caches = Path(os.environ.get('XDG_CACHE_HOME', home / '.cache')) / 'omarchy-usage-dashboard'
+    for key, folder in homes(config, usage).items():
+        record = usage / (key + '.json')
+        if not record.exists():
+            continue
+        cache = caches / ('claude-resets.json' if key == 'claude' else 'claude-resets-%s.json' % key)
+        count, expiry = answer(cache, force, folder)
+        update(record, count, expiry)
     return 0
 
 
