@@ -1,7 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.12.0 - 2026-10-18
 
+- OpenCode Go quota works again with OpenCode 2.x. OpenCode 2.x saves API keys in its own database and leaves the old `auth.json` behind, so the dashboard kept sending an expired key and the Go limits stopped updating. It now uses the active key from OpenCode's credential store, never a deactivated one, and falls back to `auth.json` for 1.x. A rejected key now says to reconnect Go in OpenCode.
+- Remove Ollama Cloud and ClinePass. Their quota collectors, key settings, rate tables, and icons are gone. Recorded history for them is dropped from the ledger, a ClinePass or Ollama Cloud runtime in T3 Code counts as plain OpenCode, and Hermes rows for those routes are no longer read. Their agent usage records and quota caches are deleted, so other panels stop showing frozen cards. Stored keys and account folders for them are ignored and removed from settings on the next save.
+- The bar panel is sized against the screen as well as the font, so on a 1080p screen it no longer fills nearly the whole height. Larger screens keep the previous size.
 - Show banked resets on every Claude account card, not only the main one. A second Claude record linked to an account folder in Settings, by account id or by matching name, gets the resets of that folder's sign-in. Records linked to no folder still show none.
 - Add the day's estimated API value to `hourly-summary.json`, so a bar widget can show it without running a report. `value` prices the same events `tokens` counts, the way the dashboard's report prices them, and `unpricedTokens` is the part no rate covers. The file keeps schema version 1, and readers that ignore the new fields see no change.
 

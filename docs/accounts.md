@@ -12,12 +12,12 @@ Open Settings, name the default local history group if needed, then choose **Add
 | Pi / Oh My Pi | Agent folder containing `sessions` |
 | Muse | Data home containing `sessions` |
 | Antigravity | Agent home containing `conversations` (for example `~/.gemini/antigravity-cli`) |
-| Hermes | Hermes home containing `state.db` (add one entry per route: OpenCode Go, Ollama Cloud, CommandCode, and ClinePass) |
+| Hermes | Hermes home containing `state.db` (add one entry per route: OpenCode Go and CommandCode) |
 | Cursor | Cloud usage only; sign in to the Cursor desktop app (no folders to add) |
 
 An account can combine Codex, Claude, and other source folders. OpenCode and OpenCode Go need separate source entries to label both sets of routes in the same database. Folders must already be available locally or mounted. No remote sync or credentials are configured here. Missing folders appear in source coverage and can be connected later.
 
-A Hermes home (`~/.hermes`) carries every route Hermes bills. Choose the route it belongs to (OpenCode Go, Ollama Cloud, CommandCode, or ClinePass) when you add the folder, and add further entries for the other routes if you want them labelled; the folder itself holds one database. Put it under the account whose history it belongs to, so the two clients' usage for that account compares on one card instead of splitting across two.
+A Hermes home (`~/.hermes`) carries every route Hermes bills. Choose the route it belongs to (OpenCode Go or CommandCode) when you add the folder, and add further entries for the other routes if you want them labelled; the folder itself holds one database. Put it under the account whose history it belongs to, so the two clients' usage for that account compares on one card instead of splitting across two.
 
 Choose **Account** at the top of the dashboard. Each entry identifies one source and one account, including the main login, named folders, separate T3 Code login homes, legacy additional homes, and linked agent records. Accounts stay selectable when they have no activity in the current period. Existing named folders take precedence over automatic discovery, so adding the same home through T3 does not create another account. T3 runtimes routed to API services remain clients of that service's main account unless you explicitly assign their folders to a named account.
 

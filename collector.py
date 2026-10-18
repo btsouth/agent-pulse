@@ -21,6 +21,7 @@ import tempfile
 import time
 import tomllib
 import subprocess
+import urllib.error
 import urllib.request
 import urllib.parse
 import uuid
@@ -32,9 +33,12 @@ PINNED_LIMIT = CONFIG.with_name('pinned-limit.json')
 MAX_PINNED_LIMITS = 3
 PROVIDERS = {'codex': 'Codex', 'claude': 'Claude', 'opencode-go': 'OpenCode Go', 'grok': 'Grok Build',
              'gemini': 'Gemini CLI', 'opencode': 'OpenCode', 'pi': 'Pi', 'omp': 'Oh My Pi', 'muse': 'Muse',
-             'antigravity': 'Antigravity',
-             'ollama-cloud': 'Ollama Cloud', 'commandcode': 'CommandCode',
-             'clinepass': 'ClinePass', 'cursor': 'Cursor'}
+             'antigravity': 'Antigravity', 'commandcode': 'CommandCode', 'cursor': 'Cursor'}
+# Providers this dashboard no longer reads. Settings and ledgers written by
+# earlier releases can still name them, and settings can still hold their
+# keys, which reports would no longer mask.
+RETIRED_PROVIDERS = ('ollama-cloud', 'clinepass')
+RETIRED_KEY_FIELDS = ('ollamaApiKey', 'clinepassApiKey')
 HOME_KEYS = ('codexHomes', 'claudeHomes', 'grokHomes', 'geminiHomes', 'opencodeHomes', 'piHomes', 'ompHomes',
              'museHomes', 'antigravityHomes', 'commandcodeHomes', 'hermesHomes')
 # Provider ids used by the Hermes agent's own per-model usage table. Hermes
@@ -42,31 +46,26 @@ HOME_KEYS = ('codexHomes', 'claudeHomes', 'grokHomes', 'geminiHomes', 'opencodeH
 # source, not a separate provider. Two of these are the same product reached
 # over different wire formats, so they map onto one dashboard provider: an
 # account is not two accounts because one call used the Anthropic shape.
-HERMES_ROUTES = ('opencode-go', 'ollama-cloud', 'commandcode', 'commandcode-anthropic', 'clinepass')
+HERMES_ROUTES = ('opencode-go', 'commandcode', 'commandcode-anthropic')
 HERMES_ROUTE_NAMES = {'commandcode-anthropic': 'commandcode'}
 HERMES_TASKS = {'': 'conversation', 'title_generation': 'title generation', 'background_review': 'background review',
                 'approval': 'approval', 'compression': 'context compression', 'vision': 'vision',
                 'embedding': 'embedding'}
-# Ollama Cloud reports quota as a fraction of each plan window. Legacy plans
-# have session and weekly windows; credit plans have a monthly one.
-OLLAMA_WINDOWS = {'session': 'Session (5-hour)', 'weekly': 'Weekly (7-day)', 'monthly': 'Monthly'}
 # One model can be reached over several routes, and each route writes the model
-# string its own API returns: OpenCode Go and Ollama Cloud record a bare name,
-# while CommandCode and ClinePass prefix it with the vendor's id. Those are the
+# string its own API returns: OpenCode Go records a bare name, while
+# CommandCode prefixes it with the vendor's id. Those are the
 # same model, so the Models breakdown groups them and shows the split by route.
 # Identical strings need no entry below. Most vendor-prefixed spellings are
 # listed explicitly because a general prefix rule would merge model families
 # that only look alike. Muse Spark is the narrow exception: its routes add
 # vendor prefixes to the same `muse-spark-*` model ids.
-MODEL_FAMILIES = {'deepseek/deepseek-v4.1-flash': 'deepseek-v4.1-flash',
-                  'cline-pass/deepseek-v4.1-flash': 'deepseek-v4.1-flash'}
+MODEL_FAMILIES = {'deepseek/deepseek-v4.1-flash': 'deepseek-v4.1-flash'}
 # T3 Code keeps each configured provider instance in settings.json. The
 # runtime homes are ordinary Codex, Claude, or OpenCode stores, but the app's
 # provider name is what identifies the account and pricing route.
 T3_DRIVERS = {'codex': 'codex', 'claudeagent': 'claude', 'claude': 'claude', 'opencode': 'opencode'}
 CODEX_ROUTE_PROVIDERS = {'commandcode': 'commandcode'}
-OPENCODE_ROUTE_PROVIDERS = {'opencodego': 'opencode-go', 'clinepass': 'clinepass',
-                            'ollamacloud': 'ollama-cloud'}
+OPENCODE_ROUTE_PROVIDERS = {'opencodego': 'opencode-go'}
 
 
 def model_family(name):
@@ -83,11 +82,10 @@ def model_family(name):
 API_KEY_MASK = 'stored'
 # Every stored key field, in one place: the report mask and the settings save
 # path both iterate this list, so a key added here cannot be echoed by omission.
-API_KEY_FIELDS = ('ollamaApiKey', 'commandcodeApiKey', 'clinepassApiKey')
+API_KEY_FIELDS = ('commandcodeApiKey',)
 DEFAULTS = {'enabled': ['codex', 'claude', 'opencode-go'], 'monthlyPrices': {},
             **{key: [] for key in HOME_KEYS}, 'accounts': [], 'localAccountLabel': 'Local', 'windowOpacity': 0.985,
-            'ledgerSyncDir': '', 'ledgerDeviceId': '', 'ollamaApiKey': '', 'commandcodeApiKey': '',
-            'clinepassApiKey': '', 'updateCheck': True}
+            'ledgerSyncDir': '', 'ledgerDeviceId': '', 'commandcodeApiKey': '', 'updateCheck': True}
 # The update notice asks GitHub for the latest release once a day. It sends
 # no usage data and can be switched off in Settings.
 RELEASE_URL = 'https://api.github.com/repos/btsouth/agent-pulse/releases/latest'
@@ -104,9 +102,7 @@ OVERRIDES = (('pricing.json', 'OpenCode Go official rates'),
              ('muse-pricing.json', 'Muse official rates'),
              ('codex-pricing.json', 'Codex model rates'),
              ('claude-pricing.json', 'Claude model rates'),
-             ('ollama-pricing.json', 'Ollama Cloud model rates'),
-             ('commandcode-pricing.json', 'CommandCode model rates'),
-             ('clinepass-pricing.json', 'ClinePass reference rates'))
+             ('commandcode-pricing.json', 'CommandCode model rates'))
 
 
 def atomic_json(path, value):
@@ -121,8 +117,19 @@ def atomic_json(path, value):
 
 
 def settings():
-    try: return DEFAULTS | json.loads(CONFIG.read_text())
+    try: cfg = DEFAULTS | json.loads(CONFIG.read_text())
     except (OSError, ValueError): return dict(DEFAULTS)
+    for field in RETIRED_KEY_FIELDS: cfg.pop(field, None)
+    if isinstance(cfg.get('enabled'), list):
+        cfg['enabled'] = [p for p in cfg['enabled'] if p not in RETIRED_PROVIDERS]
+    # An account folder saved for a retired source would fail validation on
+    # every later save, so it is dropped with the source.
+    if isinstance(cfg.get('accounts'), list):
+        cfg['accounts'] = [a | {'directories': [d for d in a['directories']
+                                                if not (isinstance(d, dict) and d.get('provider') in RETIRED_PROVIDERS)]}
+                           if isinstance(a, dict) and isinstance(a.get('directories'), list) else a
+                           for a in cfg['accounts']]
+    return cfg
 
 
 def valid_pin(value):
@@ -196,8 +203,6 @@ def t3_provider_instances():
         identity = provider_key(str(instance_id) + ' ' + str(instance.get('displayName') or ''))
         provider = driver
         if 'commandcode' in identity: provider = 'commandcode'
-        elif 'clinepass' in identity: provider = 'clinepass'
-        elif 'ollamacloud' in identity: provider = 'ollama-cloud'
         elif 'opencodego' in identity: provider = 'opencode-go'
 
         root = config.get('homePath')
@@ -964,6 +969,22 @@ def cursor_walk(token, end=None, stop_ms=0, cycle_ms=0):
     return records, oldest, complete
 
 
+def purge_retired_providers(ledger):
+    # Sources this dashboard no longer reads. Their old rows, including copies
+    # a peer on an older release still exports, would otherwise linger as an
+    # unnamed provider.
+    marks = ','.join('?' for _ in RETIRED_PROVIDERS)
+    ledger.db.execute(f'DELETE FROM event_sources WHERE event_id IN (SELECT id FROM events WHERE provider IN ({marks}))',
+                      RETIRED_PROVIDERS)
+    ledger.db.execute(f'DELETE FROM events WHERE provider IN ({marks})', RETIRED_PROVIDERS)
+    # This dashboard wrote their agent usage records and quota caches. Other
+    # panels list every record in that folder and would keep a frozen card.
+    for path in [STATE.parent / 'agents/usage' / (p + '.json') for p in RETIRED_PROVIDERS] + \
+                [STATE / 'ollama-quota.json', STATE / 'clinepass-quota.json']:
+        try: path.unlink()
+        except OSError: pass
+
+
 def purge_legacy_cursor(ledger):
     # Branch-era local rows are identified by provenance, never by shape, so
     # no API row can match. Both tables stay consistent (see put()).
@@ -1081,7 +1102,7 @@ def hermes_ledger_path(root):
 def hermes_records(path):
     """Per-route token totals from the Hermes agent's own usage table.
 
-    Hermes bills OpenCode Go and Ollama Cloud through the same accounts this
+    Hermes bills OpenCode Go and CommandCode through the same accounts this
     dashboard reads from the CLI apps, and writes nothing to those apps'
     histories, so its ledger is the only local record of that traffic. Rows
     are per session, model, route, and task; the table accumulates in place,
@@ -1456,6 +1477,7 @@ class Ledger:
         for source in sources:
             source['status'] = 'missing' if not source['exists'] else 'partial' if source.get('readErrors') else 'available'
         if not local_only: warnings.extend(self.sync_ledgers(cfg))
+        purge_retired_providers(self)
         meta = {'sources': sources, 'warnings': warnings, 'scannedAt': time.time(), 'machine': 'demo-computer' if os.getenv('AI_USAGE_DEMO') == '1' else socket.gethostname()}
         if not local_only:
             self.db.execute('INSERT OR REPLACE INTO metadata VALUES (?,?)', ('scan', json.dumps(meta)))
@@ -1561,10 +1583,10 @@ def price_detail(r, catalog):
     # CommandCode bills one resale table for the whole product, so both of its
     # wire-format routes read the same namespaced keys rather than falling
     # through to the lab's own list price for a same-named model.
-    if r['provider'] in ('commandcode', 'clinepass'):
+    if r['provider'] == 'commandcode':
         lookup = r['provider'] + '/' + model
     rate = catalog.get(lookup)
-    if not rate and r['provider'] not in ('ollama-cloud', 'commandcode', 'clinepass'):
+    if not rate and r['provider'] != 'commandcode':
         rate = catalog.get(model) or catalog.get('anthropic/' + model) or catalog.get('openai/' + model) or catalog.get('gemini/' + model)
     if not rate: return fallback
     # Internal models have no published rate and are not billed per token.
@@ -1626,15 +1648,36 @@ def finish(b):
                 'valuePerSession': b['value'] / len(b['sessions']) if b['sessions'] else None}
 
 
+def go_api_key():
+    """OpenCode Go API key. OpenCode 2.x keeps credentials in the credential
+    table of opencode.db and leaves the 1.x auth.json in place, so a key saved
+    in 2.x wins over a stale auth.json entry."""
+    root = Path(os.getenv('XDG_DATA_HOME', HOME / '.local/share')) / 'opencode'
+    try:
+        conn = sqlite3.connect((root / 'opencode.db').resolve().as_uri() + '?mode=ro', uri=True, timeout=3)
+        try:
+            # A deactivated key is never used; a migrated row may have no flag.
+            rows = conn.execute("SELECT value FROM credential WHERE integration_id='opencode-go' AND active IS NOT 0 "
+                                'ORDER BY active IS 1 DESC, time_updated DESC').fetchall()
+        finally: conn.close()
+    except sqlite3.Error: rows = []
+    for (raw,) in rows:
+        try: auth = json.loads(raw)
+        except ValueError: continue
+        # 2.x writes type "key"; keys migrated from 1.x keep "api".
+        if isinstance(auth, dict) and auth.get('type') in ('key', 'api') and auth.get('key'): return auth['key']
+    try: auth = json.loads((root / 'auth.json').read_text()).get('opencode-go', {})
+    except (OSError, ValueError, AttributeError): return None
+    return auth.get('key') if isinstance(auth, dict) and auth.get('type') == 'api' else None
+
+
 def go_quota(force=False):
     path = STATE / 'go-quota.json'
     try: cached = json.loads(path.read_text())
     except (OSError, ValueError): cached = {}
     if not force and time.time() - cached.get('attemptedAt', 0) < 300: return cached
     try:
-        auth_path = Path(os.getenv('XDG_DATA_HOME', HOME / '.local/share')) / 'opencode/auth.json'
-        auth = json.loads(auth_path.read_text()).get('opencode-go', {})
-        key = auth.get('key') if auth.get('type') == 'api' else None
+        key = go_api_key()
         if not key: raise QuotaUnavailable('Connect OpenCode Go in OpenCode to read quota.')
         request = urllib.request.Request('https://opencode.ai/zen/go/v1/usage',
                     headers={'Authorization': 'Bearer ' + key, 'User-Agent': 'Omarchy-AI-Usage/0.1'})
@@ -1652,7 +1695,9 @@ def go_quota(force=False):
         cached = {'limits': windows, 'updatedAt': dt.datetime.now(dt.timezone.utc).isoformat(), 'error': ''}
     except Exception as exc:
         # Do not expose credential-bearing request objects or raw response bodies.
-        cached['error'] = str(exc) if isinstance(exc, QuotaUnavailable) else 'Go quota unavailable. Check the connection in OpenCode.'
+        cached['error'] = (str(exc) if isinstance(exc, QuotaUnavailable)
+                           else 'OpenCode Go rejected the API key. Reconnect Go in OpenCode.' if isinstance(exc, urllib.error.HTTPError) and exc.code in (401, 403)
+                           else 'Go quota unavailable. Check the connection in OpenCode.')
     cached['attemptedAt'] = time.time()
     atomic_json(path, cached)
     return cached
@@ -1691,16 +1736,14 @@ def account_quotas():
 def quota(provider):
     if provider in ('opencode', 'pi', 'omp'):
         return {'limits': [], 'error': 'Account limits belong to the underlying provider and are not collected here.'}
-    if provider in ('opencode-go', 'grok', 'muse', 'antigravity', 'ollama-cloud', 'commandcode', 'clinepass', 'cursor'):
+    if provider in ('opencode-go', 'grok', 'muse', 'antigravity', 'commandcode', 'cursor'):
         try: d = json.loads((STATE / {'opencode-go': 'go-quota.json', 'grok': 'grok-quota.json', 'muse': 'muse-quota.json',
                                       'antigravity': 'antigravity-quota.json',
-                                      'ollama-cloud': 'ollama-quota.json',
                                       'commandcode': 'commandcode-quota.json',
-                                      'clinepass': 'clinepass-quota.json',
                                       'cursor': 'cursor-quota.json'}[provider]).read_text())
         except (OSError, ValueError): d = {}
         result = {'limits': d.get('limits', []), 'updatedAt': d.get('updatedAt'), 'error': d.get('error', '')}
-        if provider in ('muse', 'ollama-cloud', 'commandcode', 'clinepass'): result['plan'] = d.get('plan', '')
+        if provider in ('muse', 'commandcode'): result['plan'] = d.get('plan', '')
         # A prepaid wallet a provider reports alongside its windows rides
         # through to the card unchanged.
         if d.get('balance'): result['balance'] = d['balance']
@@ -1907,21 +1950,6 @@ def config_dir():
     return Path(os.getenv('XDG_CONFIG_HOME', HOME / '.config')) / 'omarchy/ai-usage'
 
 
-def ollama_key(cfg=None):
-    """Ollama Cloud API key, preferring a key the user supplied over one the
-    machine happens to export. Nothing here writes or refreshes credentials."""
-    cfg = settings() if cfg is None else cfg
-    typed = str(cfg.get('ollamaApiKey') or '').strip()
-    if typed: return typed
-    from_env = str(os.getenv('OLLAMA_API_KEY') or '').strip()
-    if from_env: return from_env
-    for path in (config_dir() / 'ollama.key', Path(os.getenv('XDG_DATA_HOME', HOME / '.local/share')) / 'ollama/api_key'):
-        try: value = path.read_text().strip()
-        except OSError: continue
-        if value: return value
-    return ''
-
-
 def quota_key_version(key, key_file, cached):
     """Detect credential changes without persisting a fast hash of the key.
 
@@ -1947,50 +1975,6 @@ def quota_key_version(key, key_file, cached):
         fingerprint = {'scheme': 'pbkdf2-sha256-v1', 'salt': salt.hex(),
                        'digest': hashlib.pbkdf2_hmac('sha256', key.encode(), salt, 600_000, dklen=32).hex()}
     return {'file': file_version, 'key': fingerprint}
-
-
-def ollama_quota(force=False):
-    path = STATE / 'ollama-quota.json'
-    key = ollama_key()
-    key_file = config_dir() / 'ollama.key'
-    # Throttle on the credential itself, not on one of the files that may hold
-    # it: switching accounts in Settings or OLLAMA_API_KEY would otherwise show
-    # the previous account's usage until the cache expired.
-    try: cached = json.loads(path.read_text())
-    except (OSError, ValueError): cached = {}
-    key_version = quota_key_version(key, key_file, cached)
-    if not force and cached.get('keyVersion') == key_version and time.time() - cached.get('attemptedAt', 0) < 300: return cached
-    try:
-        if not key: raise QuotaUnavailable('Add an Ollama Cloud API key in Settings to read its usage.')
-        request = urllib.request.Request('https://ollama.com/api/usage',
-            headers={'Authorization': 'Bearer ' + key, 'User-Agent': 'Omarchy-AI-Usage/0.1'})
-        with urllib.request.urlopen(request, timeout=12) as response: data = json.load(response)
-        if not isinstance(data, dict): raise ValueError('Ollama returned an unrecognized usage response.')
-        limits = data.get('limits')
-        if not isinstance(limits, dict): raise ValueError('Ollama returned no recognized usage windows.')
-        windows = []
-        # Whatever windows the plan has. Legacy plans report session and
-        # weekly; credit plans report a monthly one. The endpoint carries no
-        # reset time, so the meters show a share without a countdown.
-        for name, label in OLLAMA_WINDOWS.items():
-            window = limits.get(name)
-            if not isinstance(window, dict) or not isinstance(window.get('usage'), (int, float)): continue
-            # A plan can report above 100% (overage). Clamp for the meter
-            # rather than discarding the window, which would read as a
-            # credential failure once it is the only window left.
-            windows.append({'label': label, 'percent': min(1.0, max(0.0, float(window['usage']))),
-                            'raw': float(window['usage'])} if window['usage'] > 1
-                           else {'label': label, 'percent': float(window['usage'])})
-        if not windows: raise ValueError('Ollama returned no recognized usage windows.')
-        plan = data.get('plan') if isinstance(data.get('plan'), str) else ''
-        cached = {'limits': windows, 'updatedAt': dt.datetime.now(dt.timezone.utc).isoformat(), 'error': '', 'plan': plan}
-    except Exception as exc:
-        # Never quote a credential-bearing request object, URL, or body.
-        cached['error'] = str(exc) if isinstance(exc, QuotaUnavailable) else 'Ollama Cloud usage unavailable. Check the API key.'
-    cached['attemptedAt'] = time.time()
-    cached['keyVersion'] = key_version
-    atomic_json(path, cached)
-    return cached
 
 
 def commandcode_key(cfg=None):
@@ -2104,96 +2088,6 @@ def commandcode_quota(force=False):
     except Exception as exc:
         # Never quote a credential-bearing request object, URL, or body.
         cached['error'] = str(exc) if isinstance(exc, QuotaUnavailable) else 'CommandCode usage unavailable. Check the API key.'
-    cached['attemptedAt'] = time.time()
-    cached['keyVersion'] = key_version
-    atomic_json(path, cached)
-    return cached
-
-
-def clinepass_key(cfg=None):
-    """ClinePass API key, preferring one the user supplied over one the machine
-    happens to export. Nothing here writes or refreshes credentials."""
-    cfg = settings() if cfg is None else cfg
-    typed = str(cfg.get('clinepassApiKey') or '').strip()
-    if typed: return typed
-    from_env = str(os.getenv('CLINE_API_KEY') or '').strip()
-    if from_env: return from_env
-    for path in (config_dir() / 'clinepass.key',):
-        try: value = path.read_text().strip()
-        except OSError: continue
-        if value: return value
-    return ''
-
-
-def clinepass_call(key, path):
-    """One read-only GET against Cline's own endpoints. The key rides in a
-    header; nothing here writes, refreshes, or logs a credential."""
-    request = urllib.request.Request('https://api.cline.bot' + path,
-        headers={'Authorization': 'Bearer ' + key, 'Accept': 'application/json',
-                 'User-Agent': 'Omarchy-AI-Usage/0.1'})
-    with urllib.request.urlopen(request, timeout=12) as response:
-        data = json.load(response)
-    if not isinstance(data, dict): raise ValueError('ClinePass returned an unrecognized usage response.')
-    if data.get('success') is False: raise ValueError('ClinePass refused the usage request.')
-    # This provider wraps its payload, and it wraps its errors the other way:
-    # {"data": {"limits": [...]}, "success": true} against {"error": ..., "success": false}.
-    payload = data.get('data')
-    return payload if isinstance(payload, dict) else data
-
-
-# ClinePass names its windows in snake_case and gives each its own reset time.
-CLINEPASS_WINDOWS = {'five_hour': '5 hours', 'weekly': 'Weekly', 'monthly': 'Monthly'}
-
-
-def clinepass_window(row):
-    """One window, normalised. The endpoint reports a percentage, and every
-    other provider's cache holds a 0-1 fraction, so divide it here once rather
-    than leaving each consumer to guess which scale it is reading."""
-    if not isinstance(row, dict): return None
-    used = row.get('percentUsed')
-    if isinstance(used, bool) or not isinstance(used, (int, float)): return None
-    kind = str(row.get('type') or '').strip()
-    # A window this table has not seen still gets a label, so a plan tier that
-    # reports a new one shows up rather than silently losing a meter.
-    label = CLINEPASS_WINDOWS.get(kind) or kind.replace('_', ' ').strip().capitalize()
-    if not label: return None
-    fraction = max(0.0, float(used) / 100.0)
-    reset = str(row.get('resetsAt') or '').strip()
-    try: reset = dt.datetime.fromisoformat(reset.replace('Z', '+00:00')).isoformat() if reset else ''
-    except ValueError: reset = ''
-    return {'label': label, 'percent': min(1.0, fraction), 'raw': fraction, 'resetsAt': reset}
-
-
-def clinepass_quota(force=False):
-    """ClinePass measures usage as a share of three plan windows: a rolling five
-    hours, the calendar week, and the calendar month. The endpoint publishes a
-    percentage per window with its own reset time, so these meters carry a
-    countdown, and the plan name comes from a second call.
-
-    The key is a Cline API key from the Settings field, CLINE_API_KEY, or a
-    clinepass.key file; the endpoints are the ones Cline's own dashboard uses
-    and are not documented for third parties, so a failure leaves the previous
-    snapshot in place with an error rather than emptying the card."""
-    path = STATE / 'clinepass-quota.json'
-    key = clinepass_key()
-    key_file = config_dir() / 'clinepass.key'
-    try: cached = json.loads(path.read_text())
-    except (OSError, ValueError): cached = {}
-    key_version = quota_key_version(key, key_file, cached)
-    if not force and cached.get('keyVersion') == key_version and time.time() - cached.get('attemptedAt', 0) < 300: return cached
-    try:
-        if not key: raise QuotaUnavailable('Add a ClinePass API key in Settings to read its usage.')
-        reported = clinepass_call(key, '/api/v1/users/me/plan/usage-limits').get('limits')
-        limits = [window for window in (clinepass_window(row) for row in (reported if isinstance(reported, list) else [])) if window]
-        if not limits: raise ValueError('ClinePass returned no recognized usage windows.')
-        plan = ''
-        try:
-            plan = str((clinepass_call(key, '/api/v1/users/me/plan').get('plan') or {}).get('displayName') or '')
-        except Exception: pass
-        cached = {'limits': limits, 'updatedAt': dt.datetime.now(dt.timezone.utc).isoformat(), 'error': '', 'plan': plan}
-    except Exception as exc:
-        # Never quote a credential-bearing request object, URL, or body.
-        cached['error'] = str(exc) if isinstance(exc, QuotaUnavailable) else 'ClinePass usage unavailable. Check the API key.'
     cached['attemptedAt'] = time.time()
     cached['keyVersion'] = key_version
     atomic_json(path, cached)
@@ -2790,7 +2684,7 @@ def report(ledger, cfg, days=7, provider='all', now=None, selection=None):
                 limit, promo, promo_ends = rate['monthly_limit_promo_usd'], True, rate['promo_ends']
             go_allowance['models'].append({'model': model, 'value': value, 'limit': limit, 'promo': promo, 'promoEnds': promo_ends})
     # Per-card model rows from the local ledger. Providers whose quota endpoint
-    # reports one aggregate number (Ollama Cloud, for example) draw a single
+    # reports only aggregate numbers draw a single
     # bar, so the local token totals are the only per-model view available.
     # Each card is scoped exactly as the card itself is: by account, and by the
     # same selection the report was asked for.
@@ -2860,7 +2754,7 @@ def write_agent_record(ledger, provider):
     today_data = next((x['providers'][provider] for x in data['daily'] if x['date'] == today), finish(bucket()))
     record_data = {'schemaVersion': 1, 'id': provider, 'name': PROVIDERS[provider],
        'updatedAt': q.get('updatedAt'), 'ready': bool(q.get('limits') or total_records), 'hasLocalStats': True,
-       'hasPromptStats': False, 'tierLabel': 'Go' if provider == 'opencode-go' else q.get('plan', '') if provider in ('muse', 'ollama-cloud', 'commandcode', 'clinepass') else '', 'limits': q.get('limits', []), 'usageStatusText': q.get('error', ''),
+       'hasPromptStats': False, 'tierLabel': 'Go' if provider == 'opencode-go' else q.get('plan', '') if provider in ('muse', 'commandcode') else '', 'limits': q.get('limits', []), 'usageStatusText': q.get('error', ''),
        'todayTotalTokens': today_data['tokens'], 'todayPrompts': today_data['requests'], 'todaySessions': today_data['sessions'],
        'totalPrompts': total_records, 'totalSessions': total_sessions,
        'activeDays': len(active_dates), 'activeDates': active_dates,
@@ -2966,15 +2860,9 @@ def main():
             if args.action == 'scan' and 'muse' in cfg['enabled']:
                 muse_quota(args.force)
                 write_agent_record(ledger, 'muse')
-            if args.action == 'scan' and 'ollama-cloud' in cfg['enabled']:
-                ollama_quota(args.force)
-                write_agent_record(ledger, 'ollama-cloud')
             if args.action == 'scan' and 'commandcode' in cfg['enabled']:
                 commandcode_quota(args.force)
                 write_agent_record(ledger, 'commandcode')
-            if args.action == 'scan' and 'clinepass' in cfg['enabled']:
-                clinepass_quota(args.force)
-                write_agent_record(ledger, 'clinepass')
             if args.action == 'scan' and 'antigravity' in cfg['enabled']:
                 antigravity_quota(args.force)
                 write_agent_record(ledger, 'antigravity')

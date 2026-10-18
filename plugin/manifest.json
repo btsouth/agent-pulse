@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "community.ai-usage-dashboard",
   "name": "Agent Pulse",
-  "version": "1.11.3",
+  "version": "1.12.0",
   "author": "Tyler South",
   "license": "MIT",
   "description": "AI agent usage, account limits, token history, and API value estimates.",
@@ -54,13 +54,7 @@
         "antigravity": {
           "enabled": true
         },
-        "ollama-cloud": {
-          "enabled": true
-        },
         "commandcode": {
-          "enabled": true
-        },
-        "clinepass": {
           "enabled": true
         },
         "cursor": {
