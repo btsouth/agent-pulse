@@ -344,6 +344,7 @@ class CollectorTests(unittest.TestCase):
     def test_t3_provider_instances_are_discovered_and_routed(self):
         command_home = self.root / 't3/commandcode/codex'
         cline_data = self.root / 't3/clinepass/data'
+        # A retired route's instance is an ordinary OpenCode runtime now.
         settings = {'providerInstances': {
             'commandcode': {'driver': 'codex', 'displayName': 'CommandCode', 'enabled': True,
                             'environment': [{'name': 'COMMANDCODE_API_KEY', 'value': 't3-secret', 'sensitive': True}],
@@ -378,15 +379,15 @@ class CollectorTests(unittest.TestCase):
         instances = c.t3_provider_instances()
         self.assertEqual({(item['driver'], item['provider'], item['root']) for item in instances}, {
             ('codex', 'commandcode', str(command_home)),
-            ('opencode', 'clinepass', str(cline_data / 'opencode'))})
+            ('opencode', 'opencode', str(cline_data / 'opencode'))})
         self.assertNotIn('t3-secret', json.dumps(instances))
 
         ledger = c.Ledger(self.root / 't3.sqlite')
         meta = ledger.scan(c.DEFAULTS)
         rows = ledger.db.execute('SELECT provider,model,client,input,output,cacheRead,reasoning FROM events ORDER BY provider').fetchall()
         self.assertEqual(rows, [
-            ('clinepass', 'cline-pass/glm-5.3-flash', 'OpenCode', 100, 25, 30, 5),
-            ('commandcode', 'z-ai/glm-5.3-flashx', 'T3 Code', 30, 20, 70, 10)])
+            ('commandcode', 'z-ai/glm-5.3-flashx', 'T3 Code', 30, 20, 70, 10),
+            ('opencode', 'cline-pass/glm-5.3-flash', 'OpenCode', 100, 25, 30, 5)])
         self.assertNotIn('t3-secret', json.dumps(meta))
         ledger.db.close()
 
@@ -1861,8 +1862,8 @@ class CollectorTests(unittest.TestCase):
     def test_hermes_rows_map_to_their_route_totals(self):
         path = self.hermes_ledger([
             {'session_id': 's1', 'model': 'deepseek-v4.1-flash'},
-            {'session_id': 's2', 'model': 'glm-5.2', 'billing_provider': 'ollama-cloud',
-             'billing_base_url': 'https://ollama.com/v1', 'task': 'background_review',
+            {'session_id': 's2', 'model': 'glm-5.2', 'billing_provider': 'commandcode-anthropic',
+             'billing_base_url': 'https://api.commandcode.ai/v1', 'task': 'background_review',
              'input_tokens': 10, 'output_tokens': 2, 'cache_read_tokens': 0, 'reasoning_tokens': 0,
              'last_seen': 1789000300.0}], sessions=[('s1', '/home/user/Projects/toolport'), ('s2', '/home/user')])
         records = list(c.hermes_records(path))
@@ -1879,7 +1880,7 @@ class CollectorTests(unittest.TestCase):
         # place and its whole total must not migrate to a later day.
         self.assertEqual(go['ts'], 1789000000)
         self.assertEqual(go['modelCalls'], 4)
-        self.assertEqual(records[1]['row']['provider'], 'ollama-cloud')
+        self.assertEqual(records[1]['row']['provider'], 'commandcode')
         self.assertEqual(records[1]['task'], 'background review')
 
     def test_hermes_accumulating_row_updates_instead_of_double_counting(self):
@@ -1941,28 +1942,16 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(ledger.db.execute("SELECT COUNT(*),SUM(input) FROM events WHERE provider='opencode-go'").fetchone(), (1, 500))
         ledger.db.close()
 
-    def ollama_urlopen(self, payload):
-        import io
-        def fake(request, timeout=12):
-            assert request.full_url == 'https://ollama.com/api/usage', request.full_url
-            assert request.get_header('Authorization') == 'Bearer test-ollama-key', request.get_header('Authorization')
-            return io.BytesIO(json.dumps(payload).encode())
-        return fake
-
     def credential_quota_response(self, request, timeout=12):
         payloads = {
-            'https://ollama.com/api/usage': {'limits': {'weekly': {'usage': .2}}},
             'https://api.commandcode.ai/alpha/billing/credits': {
                 'windowLimits': {'weekly': {'used': 2, 'cap': 10}}},
             'https://api.commandcode.ai/alpha/billing/subscriptions': {'data': {}},
-            'https://api.commandcode.ai/alpha/usage/summary': {},
-            'https://api.cline.bot/api/v1/users/me/plan/usage-limits': {
-                'limits': [{'type': 'weekly', 'percentUsed': 20}]},
-            'https://api.cline.bot/api/v1/users/me/plan': {'plan': {}}}
+            'https://api.commandcode.ai/alpha/usage/summary': {}}
         return io.BytesIO(json.dumps(payloads[request.full_url]).encode())
 
     def test_quota_fingerprints_keep_cache_hits_and_detect_changed_or_removed_keys(self):
-        for provider in ('ollama', 'commandcode', 'clinepass'):
+        for provider in ('commandcode',):
             with self.subTest(provider=provider), \
                  patch.object(c, provider + '_key', return_value='fixture-secret-one') as key, \
                  patch.object(c.urllib.request, 'urlopen', side_effect=self.credential_quota_response) as network:
@@ -1995,7 +1984,7 @@ class CollectorTests(unittest.TestCase):
                 self.assertNotIn('fixture-secret-two', raw)
 
     def test_quota_legacy_fingerprints_migrate_once_despite_recent_attempt(self):
-        for provider in ('ollama', 'commandcode', 'clinepass'):
+        for provider in ('commandcode',):
             with self.subTest(provider=provider), \
                  patch.object(c, provider + '_key', return_value='fixture-secret'), \
                  patch.object(c.urllib.request, 'urlopen', side_effect=self.credential_quota_response) as network:
@@ -2022,14 +2011,14 @@ class CollectorTests(unittest.TestCase):
     def test_quota_invalid_salts_refresh_without_accepting_cache_work_factor(self):
         for salt in (None, 'z' * 32, '00', ['00' * 16]):
             with self.subTest(salt=salt), \
-                 patch.object(c, 'ollama_key', return_value='fixture-secret'), \
+                 patch.object(c, 'commandcode_key', return_value='fixture-secret'), \
                  patch.object(c.urllib.request, 'urlopen', side_effect=self.credential_quota_response) as network:
-                c.atomic_json(c.STATE / 'ollama-quota.json', {
+                c.atomic_json(c.STATE / 'commandcode-quota.json', {
                     'attemptedAt': time.time(), 'keyVersion': {'file': None, 'key': {
                         'scheme': 'pbkdf2-sha256-v1', 'salt': salt, 'digest': 'old', 'iterations': 1}}})
-                result = c.ollama_quota()
+                result = c.commandcode_quota()
                 self.assertEqual(result['error'], '')
-                self.assertEqual(network.call_count, 1)
+                self.assertGreater(network.call_count, 0)
                 self.assertEqual(len(bytes.fromhex(result['keyVersion']['key']['salt'])), 16)
 
     def test_quota_key_file_change_invalidates_the_cache(self):
@@ -2041,47 +2030,18 @@ class CollectorTests(unittest.TestCase):
         self.assertNotEqual(one, two)
         self.assertEqual(one['key'], two['key'])
 
-    def test_ollama_quota_maps_whatever_windows_the_plan_reports(self):
-        payload = {'limits': {'session': {'usage': 0.046, 'models': [{'name': 'glm-5.2', 'request_count': 34}]},
-                              'weekly': {'usage': 0.051, 'models': [{'name': 'glm-5.2', 'request_count': 254}]}}}
-        with patch.dict('os.environ', {'OLLAMA_API_KEY': 'test-ollama-key', 'XDG_CONFIG_HOME': str(self.root / 'config'),
-                'XDG_DATA_HOME': str(self.root / 'data')}), \
-             patch.object(c.urllib.request, 'urlopen', side_effect=self.ollama_urlopen(payload)):
-            quota = c.ollama_quota(True)
-            self.assertEqual(c.quota('ollama-cloud')['limits'][0]['label'], 'Session (5-hour)')
-        self.assertEqual(quota['error'], '')
-        by_label = {w['label']: w for w in quota['limits']}
-        self.assertAlmostEqual(by_label['Session (5-hour)']['percent'], .046)
-        self.assertAlmostEqual(by_label['Weekly (7-day)']['percent'], .051)
-        # The endpoint carries no reset time, so no window invents one.
-        self.assertNotIn('resetsAt', by_label['Weekly (7-day)'])
-
-    def test_ollama_quota_accepts_a_monthly_credit_plan(self):
-        payload = {'limits': {'monthly': {'usage': 0.0, 'models': [{'name': 'deepseek-v4.1-flash', 'request_count': 18}]}}}
-        with patch.dict('os.environ', {'OLLAMA_API_KEY': 'test-ollama-key', 'XDG_CONFIG_HOME': str(self.root / 'config'),
-                'XDG_DATA_HOME': str(self.root / 'data')}), \
-             patch.object(c.urllib.request, 'urlopen', side_effect=self.ollama_urlopen(payload)):
-            quota = c.ollama_quota(True)
-        self.assertEqual(quota['error'], '')
-        self.assertEqual([w['label'] for w in quota['limits']], ['Monthly'])
-        self.assertAlmostEqual(quota['limits'][0]['percent'], 0.0)
-        # The endpoint's per-model request counts are not a share of the plan,
-        # so nothing is fabricated into the window; per-model detail comes from
-        # the local ledger instead.
-        self.assertNotIn('note', quota['limits'][0])
-
     def test_cards_carry_per_model_rows_from_the_local_ledger(self):
         ledger = c.Ledger(self.root / 'models.sqlite')
-        ledger.put(c.record('a', 'ollama-cloud', 's', 1789000000, 'glm-5.2', '/p', 'Hermes',
+        ledger.put(c.record('a', 'opencode-go', 's', 1789000000, 'glm-5.3-flash', '/p', 'Hermes',
                             input=1000, output=100))
-        ledger.put(c.record('b', 'ollama-cloud', 's', 1789000000, 'kimi-k3', '/p', 'Hermes',
+        ledger.put(c.record('b', 'opencode-go', 's', 1789000000, 'deepseek-v4.1-flash', '/p', 'Hermes',
                             input=10, output=1))
         with patch.object(c, 'quota', return_value={'limits': []}), patch.object(c, 'account_quotas', return_value=({}, {})), \
              patch.object(c, 'theme', return_value={}):
-            data = c.report(ledger, c.DEFAULTS | {'enabled': ['ollama-cloud']}, days=365,
+            data = c.report(ledger, c.DEFAULTS | {'enabled': ['opencode-go']}, days=365,
                             now=dt.datetime(2026, 9, 16, 12).astimezone())
-        card = next(x for x in data['cards'] if x['provider'] == 'ollama-cloud')
-        self.assertEqual([m['model'] for m in card['models']], ['glm-5.2', 'kimi-k3'])
+        card = next(x for x in data['cards'] if x['provider'] == 'opencode-go')
+        self.assertEqual([m['model'] for m in card['models']], ['glm-5.3-flash', 'deepseek-v4.1-flash'])
         self.assertEqual(card['models'][0]['tokens'], 1100)
         self.assertGreater(card['models'][0]['value'], 0)
         ledger.db.close()
@@ -2089,34 +2049,33 @@ class CollectorTests(unittest.TestCase):
     def test_cards_are_ordered_by_tokens_across_providers(self):
         ledger = c.Ledger(self.root / 'order.sqlite')
         self.addCleanup(ledger.db.close)
-        for provider, tokens in (('ollama-cloud', 10), ('opencode-go', 500), ('codex', 2000)):
+        for provider, tokens in (('commandcode', 10), ('opencode-go', 500), ('codex', 2000)):
             ledger.put(c.record(provider, provider, 's', 1789000000, 'glm-5.2', '/p', 'Hermes', input=tokens))
         with patch.object(c, 'quota', return_value={'limits': []}), patch.object(c, 'account_quotas', return_value=({}, {})), \
              patch.object(c, 'theme', return_value={}):
-            data = c.report(ledger, c.DEFAULTS | {'enabled': ['ollama-cloud', 'opencode-go', 'codex']}, days=365,
+            data = c.report(ledger, c.DEFAULTS | {'enabled': ['commandcode', 'opencode-go', 'codex']}, days=365,
                             now=dt.datetime(2026, 9, 16, 12).astimezone())
-        self.assertEqual([card['provider'] for card in data['cards']], ['codex', 'opencode-go', 'ollama-cloud'])
+        self.assertEqual([card['provider'] for card in data['cards']], ['codex', 'opencode-go', 'commandcode'])
 
     def model_family_ledger(self):
-        """One model recorded the way four routes each name it, plus a second
+        """One model recorded the way two routes each name it, plus a second
         model that must stay its own row."""
         ledger = c.Ledger(self.root / 'families.sqlite')
         self.addCleanup(ledger.db.close)
         when = 1789000000
-        families = {'opencode-go': 'deepseek-v4.1-flash', 'ollama-cloud': 'deepseek-v4.1-flash',
-                    'commandcode': 'deepseek/deepseek-v4.1-flash', 'clinepass': 'cline-pass/deepseek-v4.1-flash'}
+        families = {'opencode-go': 'deepseek-v4.1-flash', 'commandcode': 'deepseek/deepseek-v4.1-flash'}
         for provider, model in families.items():
             ledger.put(c.record(provider, provider, provider + '-session', when, model, '/p', 'Hermes',
                                 input=1000, output=100, cacheRead=5000))
-        ledger.put(c.record('glm', 'ollama-cloud', 'ollama-session', when, 'glm-5.2', '/p', 'Hermes', input=1000, output=100))
+        ledger.put(c.record('glm', 'opencode-go', 'glm-session', when, 'glm-5.2', '/p', 'Hermes', input=1000, output=100))
         return ledger, families
 
     def test_models_breakdown_counts_one_model_across_routes(self):
-        # Four routes record the same model under the string their own API
+        # Two routes record the same model under the string their own API
         # returns. "How much went through this model" is one answer, so the
         # Models table is one row that still carries the split by route.
         ledger, families = self.model_family_ledger()
-        cfg = c.DEFAULTS | {'enabled': list(families) + ['ollama-cloud']}
+        cfg = c.DEFAULTS | {'enabled': list(families)}
         now = dt.datetime(2026, 9, 16, 12).astimezone()
         with patch.object(c, 'quota', return_value={'limits': []}), \
              patch.object(c, 'account_quotas', return_value=({}, {})), patch.object(c, 'theme', return_value={}):
@@ -2124,19 +2083,17 @@ class CollectorTests(unittest.TestCase):
             scoped = [c.report(ledger, cfg, days=365, provider=p, now=now) for p in families]
         merged = next(row for row in data['models'] if row['name'] == 'deepseek-v4.1-flash')
         self.assertEqual([row['name'] for row in data['models']], ['deepseek-v4.1-flash', 'glm-5.2'])
-        self.assertEqual(merged['tokens'], 4 * 6100)
+        self.assertEqual(merged['tokens'], 2 * 6100)
         # Each route reports the string it recorded, with its own figure.
         self.assertEqual({route['provider']: route['model'] for route in merged['routes']}, families)
-        self.assertEqual([route['tokens'] for route in merged['routes']], [6100] * 4)
-        self.assertEqual([route['sessions'] for route in merged['routes']], [1] * 4)
+        self.assertEqual([route['tokens'] for route in merged['routes']], [6100] * 2)
+        self.assertEqual([route['sessions'] for route in merged['routes']], [1] * 2)
         # Grouping must not re-price anything. The grouped value is what each
-        # route charged its own tokens at, so it equals the sum of the four
-        # route-scoped reports, and it is not one route's rates applied to all
-        # of the traffic (ClinePass bills this model at its own table).
+        # route charged its own tokens at, so it equals the sum of the two
+        # route-scoped reports.
         per_route = [next(row for row in scoped_report['models'] if row['name'] == 'deepseek-v4.1-flash')['value']
                      for scoped_report in scoped]
         self.assertAlmostEqual(merged['value'], sum(per_route), places=9)
-        self.assertNotAlmostEqual(merged['value'], 4 * per_route[0], places=6)
         self.assertEqual(data['models'][0]['provider'], 'opencode-go')
 
     def test_muse_model_groups_opencode_hermes_and_commandcode_spellings(self):
@@ -2192,17 +2149,17 @@ class CollectorTests(unittest.TestCase):
         with patch.object(c, 'quota', return_value={'limits': []}), \
              patch.object(c, 'account_quotas', return_value=({}, {})), patch.object(c, 'theme', return_value={}):
             by_name = c.report(ledger, cfg, days=365, now=now, selection={'model': 'deepseek-v4.1-flash'})
-            by_spelling = c.report(ledger, cfg, days=365, now=now, selection={'model': 'cline-pass/deepseek-v4.1-flash'})
+            by_spelling = c.report(ledger, cfg, days=365, now=now, selection={'model': 'deepseek/deepseek-v4.1-flash'})
             sibling = c.report(ledger, cfg, days=365, now=now, selection={'model': 'deepseek-v4-flash'})
-        self.assertEqual(by_name['summary']['tokens'], 4 * 6100)
+        self.assertEqual(by_name['summary']['tokens'], 2 * 6100)
         self.assertEqual(by_spelling['summary']['tokens'], by_name['summary']['tokens'])
         # A family is not a prefix match: the neighbouring model is a different
         # model, and a name nothing recorded selects nothing.
         self.assertEqual(sibling['summary']['tokens'], 0)
         # The per-card model rows read the same selection, so a filtered view
         # cannot show a populated table beside a card with no models.
-        card = next(card for card in by_name['cards'] if card['provider'] == 'clinepass')
-        self.assertEqual([row['model'] for row in card['models']], ['cline-pass/deepseek-v4.1-flash'])
+        card = next(card for card in by_name['cards'] if card['provider'] == 'commandcode')
+        self.assertEqual([row['model'] for row in card['models']], ['deepseek/deepseek-v4.1-flash'])
 
     def test_unpriced_coverage_stays_per_route_and_spelling(self):
         # The table groups one model's spellings, but pricing coverage names the
@@ -2210,14 +2167,14 @@ class CollectorTests(unittest.TestCase):
         # that has not caught up.
         ledger = c.Ledger(self.root / 'unpriced.sqlite')
         self.addCleanup(ledger.db.close)
-        for provider in ('opencode-go', 'ollama-cloud'):
+        for provider in ('opencode-go', 'commandcode'):
             ledger.put(c.record(provider, provider, provider + '-session', 1789000000, 'mystery-model', '/p', 'Hermes',
                                 input=1000, output=100))
-        cfg = c.DEFAULTS | {'enabled': ['opencode-go', 'ollama-cloud']}
+        cfg = c.DEFAULTS | {'enabled': ['opencode-go', 'commandcode']}
         with patch.object(c, 'quota', return_value={'limits': []}), \
              patch.object(c, 'account_quotas', return_value=({}, {})), patch.object(c, 'theme', return_value={}):
             data = c.report(ledger, cfg, days=365, now=dt.datetime(2026, 9, 16, 12).astimezone())
-        self.assertEqual([row['provider'] for row in data['pricing']['unpriced']], ['opencode-go', 'ollama-cloud'])
+        self.assertEqual([row['provider'] for row in data['pricing']['unpriced']], ['opencode-go', 'commandcode'])
         self.assertEqual({row['name'] for row in data['pricing']['unpriced']}, {'mystery-model'})
         self.assertEqual([row['unpricedTokens'] for row in data['pricing']['unpriced']], [1100, 1100])
         # The table still answers the grouped question.
@@ -2234,11 +2191,11 @@ class CollectorTests(unittest.TestCase):
              patch.object(c, 'account_quotas', return_value=({}, {})), patch.object(c, 'theme', return_value={}):
             plain = c.report(ledger, cfg, days=365, now=now)
             filtered = c.report(ledger, cfg, days=365, now=now, selection={'model': 'deepseek-v4.1-flash'})
-            route = c.report(ledger, cfg, days=365, provider='ollama-cloud', now=now)
+            route = c.report(ledger, cfg, days=365, provider='opencode-go', now=now)
             short = c.report(ledger, cfg, days=1, now=now)
         self.assertEqual([(o['name'], o['tokens']) for o in plain['modelOptions']],
-                         [('deepseek-v4.1-flash', 4 * 6100), ('glm-5.2', 1100)])
-        # Four route spellings of one model are a single option, like the table.
+                         [('deepseek-v4.1-flash', 2 * 6100), ('glm-5.2', 1100)])
+        # Two route spellings of one model are a single option, like the table.
         self.assertEqual([o['name'] for o in filtered['modelOptions']], [o['name'] for o in plain['modelOptions']])
         # Scoped to the route tab, and to the period on screen.
         self.assertEqual([o['name'] for o in route['modelOptions']], ['deepseek-v4.1-flash', 'glm-5.2'])
@@ -2289,56 +2246,10 @@ class CollectorTests(unittest.TestCase):
         # Naming the same source twice is the same view, not a different one.
         self.assertEqual(both_ways['summary']['tokens'], without['summary']['tokens'])
 
-    def test_ollama_key_precedence_and_no_key_message(self):
-        config = self.root / 'config/omarchy/ai-usage'
-        config.mkdir(parents=True, exist_ok=True)
-        # Every credential source must be inside the fixture: a real
-        # OLLAMA_API_KEY or an Ollama CLI key file on the machine would
-        # otherwise decide this test's outcome.
-        with patch.dict('os.environ', {'XDG_CONFIG_HOME': str(self.root / 'config'),
-                                       'XDG_DATA_HOME': str(self.root / 'data'), 'OLLAMA_API_KEY': ''}), \
-             patch.object(c.urllib.request, 'urlopen') as request:
-            c.atomic_json(c.CONFIG, c.DEFAULTS)
-            quota = c.ollama_quota(True)
-            self.assertIn('Settings', quota['error'])
-            request.assert_not_called()
-            (config / 'ollama.key').write_text('file-key\n')
-            self.assertEqual(c.ollama_key(), 'file-key')
-            with patch.dict('os.environ', {'OLLAMA_API_KEY': 'env-key'}): self.assertEqual(c.ollama_key(), 'env-key')
-            self.assertEqual(c.ollama_key(c.DEFAULTS | {'ollamaApiKey': 'typed-key'}), 'typed-key')
-
-    def test_ollama_quota_errors_do_not_expose_the_key(self):
-        import io
-        def failing(request, timeout=12):
-            raise c.urllib.error.HTTPError(request.full_url, 401, 'Unauthorized', {}, io.BytesIO(b'bad test-ollama-key'))
-        with patch.dict('os.environ', {'OLLAMA_API_KEY': 'test-ollama-key', 'XDG_CONFIG_HOME': str(self.root / 'config'),
-                'XDG_DATA_HOME': str(self.root / 'data')}), \
-             patch.object(c.urllib.request, 'urlopen', side_effect=failing):
-            quota = c.ollama_quota(True)
-        self.assertNotIn('test-ollama-key', json.dumps(quota))
-        self.assertNotIn('test-ollama-key', (c.STATE / 'ollama-quota.json').read_text())
-
-    def test_ollama_rates_price_cloud_models_and_double_at_peak(self):
+    def test_go_rates_stay_on_their_route(self):
         rates = c.load_rates()
-        # Off-peak Tuesday 09:00 UTC.
-        off = c.record('off', 'ollama-cloud', 's', dt.datetime(2026, 9, 15, 9, tzinfo=dt.timezone.utc).timestamp(),
-                       'deepseek-v4.1-flash', '', 'Hermes', input=1_000_000, output=1_000_000, cacheRead=1_000_000)
-        # Peak Tuesday 13:00 UTC.
-        peak = c.record('peak', 'ollama-cloud', 's', dt.datetime(2026, 9, 15, 13, tzinfo=dt.timezone.utc).timestamp(),
-                        'deepseek-v4.1-flash', '', 'Hermes', input=1_000_000, output=1_000_000, cacheRead=1_000_000)
-        self.assertAlmostEqual(c.price(off, rates['document'])[0], 0.15 + 0.60 + 0.003, places=6)
-        self.assertAlmostEqual(c.price(peak, rates['document'])[0], 0.30 + 1.20 + 0.006, places=6)
-        # A model the pricing table lists without a cached-input rate stays
-        # unpriced rather than assuming free caching.
-        partial = c.record('partial', 'ollama-cloud', 's', off['ts'], 'qwen3.5:397b', '', 'Hermes',
-                           input=100, output=10, cacheRead=50)
-        self.assertIsNone(c.price(partial, rates['document'])[0])
-        self.assertIn('Ollama Cloud model rates', rates['source'])
-
-    def test_ollama_rates_never_price_another_route(self):
-        rates = c.load_rates()
-        # The same model name on the OpenCode Go route must not pick up the
-        # cloud table, and vice versa.
+        # A Go model name is priced from the Go table only; no bare entry
+        # lets another route borrow it.
         go = c.record('go', 'opencode-go', 's', 1789000000, 'glm-5.3-flash', '', 'OpenCode',
                       input=1_000_000, output=1_000_000)
         self.assertAlmostEqual(c.price(go, rates['document'])[0], 0.15 + 0.50, places=6)
@@ -2547,158 +2458,18 @@ class CollectorTests(unittest.TestCase):
         self.assertNotIn('sk-secret-cc-value', json.dumps(result))
         self.assertIn('unavailable', result['error'])
 
-    def clinepass_urlopen(self, payloads):
-        import io
-        def fake(request, timeout=12):
-            assert request.full_url.startswith('https://api.cline.bot/api/v1/'), request.full_url
-            assert request.get_header('Authorization') == 'Bearer test-clinepass-key', request.get_header('Authorization')
-            path = request.full_url.split('api.cline.bot', 1)[1]
-            return io.BytesIO(json.dumps(payloads[path]).encode())
-        return fake
-
-    def clinepass_env(self):
-        # A real CLINE_API_KEY, settings file, or key file on this machine would
-        # otherwise decide the test's outcome, so every source points inside the
-        # fixture.
-        return {'CLINE_API_KEY': 'test-clinepass-key', 'XDG_CONFIG_HOME': str(self.root / 'config'),
-                'XDG_DATA_HOME': str(self.root / 'data')}
-
-    def test_clinepass_quota_reads_percent_windows_and_nanosecond_resets(self):
-        # The endpoint wraps everything under "data", names its windows in
-        # snake_case, reports a 0-100 percentage per window, and gives reset
-        # times precise to the nanosecond.
-        payloads = {
-            '/api/v1/users/me/plan/usage-limits': {'data': {'limits': [
-                {'type': 'five_hour', 'percentUsed': 12.5, 'resetsAt': '2026-09-18T09:06:34.503758991Z'},
-                {'type': 'weekly', 'percentUsed': 0, 'resetsAt': '2026-09-25T04:06:34.506428852Z'},
-                {'type': 'monthly', 'percentUsed': 3, 'resetsAt': '2026-10-18T04:06:34.509368183Z'}]},
-                'success': True},
-            '/api/v1/users/me/plan': {'data': {'plan': {'displayName': 'Cline Pass (Monthly)'}}, 'success': True}}
-        with patch.dict('os.environ', self.clinepass_env()), \
-             patch.object(c.urllib.request, 'urlopen', side_effect=self.clinepass_urlopen(payloads)):
-            quota = c.clinepass_quota(True)
-            # The card reads the same file back through the quota dispatcher,
-            # plan name included.
-            self.assertEqual(c.quota('clinepass')['plan'], 'Cline Pass (Monthly)')
-        self.assertEqual(quota['error'], '')
-        self.assertEqual([w['label'] for w in quota['limits']], ['5 hours', 'Weekly', 'Monthly'])
-        by_label = {w['label']: w for w in quota['limits']}
-        # percentUsed is a 0-100 percentage; the cache holds the 0-1 fraction
-        # every other provider writes and other local tools read.
-        self.assertAlmostEqual(by_label['5 hours']['percent'], 0.125, places=6)
-        self.assertAlmostEqual(by_label['Monthly']['percent'], 0.03, places=6)
-        # The reset keeps its instant, in the ISO shape the panel's countdown
-        # reads, and the nanosecond precision survives the round trip.
-        self.assertTrue(by_label['5 hours']['resetsAt'].startswith('2026-09-18T09:06:34'), by_label['5 hours']['resetsAt'])
-        self.assertTrue(by_label['Monthly']['resetsAt'].startswith('2026-10-18T04:06:34'), by_label['Monthly']['resetsAt'])
-
-    def test_clinepass_keeps_a_window_it_has_not_seen_before(self):
-        # A plan tier that reports a fourth window must not lose a meter, and a
-        # row with no usable percentage is dropped rather than shown as zero.
-        payloads = {'/api/v1/users/me/plan/usage-limits': {'data': {'limits': [
-            {'type': 'daily', 'percentUsed': 1, 'resetsAt': ''},
-            {'type': 'five_hour', 'percentUsed': None, 'resetsAt': ''},
-            {'type': 'monthly', 'percentUsed': 240, 'resetsAt': ''}]}, 'success': True},
-            '/api/v1/users/me/plan': {'data': {'plan': {'displayName': 'Cline Pass (Monthly)'}}}}
-        with patch.dict('os.environ', self.clinepass_env()), \
-             patch.object(c.urllib.request, 'urlopen', side_effect=self.clinepass_urlopen(payloads)):
-            quota = c.clinepass_quota(True)
-        self.assertEqual([w['label'] for w in quota['limits']], ['Daily', 'Monthly'])
-        self.assertEqual(quota['limits'][0]['percent'], 0.01)
-        # An over-quota window clamps for the meter but keeps the real figure,
-        # so a saturated bar is not read as exactly full.
-        self.assertEqual(quota['limits'][1]['percent'], 1.0)
-        self.assertAlmostEqual(quota['limits'][1]['raw'], 2.4, places=6)
-
-    def test_clinepass_key_precedence_and_no_key_message(self):
-        config = self.root / 'config/omarchy/ai-usage'
-        config.mkdir(parents=True, exist_ok=True)
-        with patch.dict('os.environ', {'CLINE_API_KEY': '', 'XDG_CONFIG_HOME': str(self.root / 'config'),
-                                       'XDG_DATA_HOME': str(self.root / 'data')}), \
-             patch.object(c.urllib.request, 'urlopen') as request:
-            c.atomic_json(c.CONFIG, c.DEFAULTS)
-            quota = c.clinepass_quota(True)
-            self.assertIn('Settings', quota['error'])
-            request.assert_not_called()
-            (config / 'clinepass.key').write_text('file-key\n')
-            self.assertEqual(c.clinepass_key(), 'file-key')
-            with patch.dict('os.environ', {'CLINE_API_KEY': 'env-key'}): self.assertEqual(c.clinepass_key(), 'env-key')
-            self.assertEqual(c.clinepass_key(c.DEFAULTS | {'clinepassApiKey': 'typed-key'}), 'typed-key')
-
-    def test_clinepass_quota_errors_do_not_expose_the_key(self):
-        import io
-        def failing(request, timeout=12):
-            raise c.urllib.error.HTTPError(request.full_url, 401, 'Unauthorized', {},
-                                           io.BytesIO(b'bad test-clinepass-key'))
-        with patch.dict('os.environ', self.clinepass_env()), \
-             patch.object(c.urllib.request, 'urlopen', side_effect=failing):
-            quota = c.clinepass_quota(True)
-        self.assertNotIn('test-clinepass-key', json.dumps(quota))
-        self.assertIn('unavailable', quota['error'])
-        # The response body never reaches the cache either.
-        self.assertNotIn('test-clinepass-key', (c.STATE / 'clinepass-quota.json').read_text())
-
-    def test_clinepass_refuses_an_unsuccessful_envelope(self):
-        # Errors arrive as {"error": ..., "success": false}; the body must not
-        # be quoted back at the user.
-        payloads = {'/api/v1/users/me/plan/usage-limits': {'error': 'invalid api key test-clinepass-key', 'success': False}}
-        with patch.dict('os.environ', self.clinepass_env()), \
-             patch.object(c.urllib.request, 'urlopen', side_effect=self.clinepass_urlopen(payloads)):
-            quota = c.clinepass_quota(True)
-        self.assertIn('unavailable', quota['error'])
-        self.assertNotIn('test-clinepass-key', json.dumps(quota))
-
-    def test_clinepass_prices_only_its_own_route(self):
-        rates = c.load_rates()['document']
-        self.assertIn('clinepass/cline-pass/deepseek-v4.1-flash', rates)
-        # The vendor prefix is part of the model id, so no bare name is stored.
-        self.assertNotIn('cline-pass/deepseek-v4.1-flash', rates)
-        # 01:30 UTC on a Saturday is outside the published peak window.
-        off_peak = dt.datetime(2026, 9, 19, 1, 30, tzinfo=dt.timezone.utc).timestamp()
-        row = c.record('a', 'clinepass', 's', off_peak, 'cline-pass/deepseek-v4.1-flash', '/p', 'Hermes', input=1_000_000)
-        row['apiProvider'] = 'clinepass'
-        value, _ = c.price(row, rates)
-        self.assertAlmostEqual(value, 0.22, places=6)
-        # Hermes may record the API provider as cline-pass, while the account
-        # route remains clinepass. It uses the same resale rate.
-        self.assertAlmostEqual(c.price(dict(row, apiProvider='cline-pass'), rates)[0], 0.22)
-        # The same model name on another route keeps that route's rate.
-        other = c.record('b', 'ollama-cloud', 's', off_peak, 'deepseek-v4.1-flash', '/p', 'Hermes', input=1_000_000)
-        other['apiProvider'] = 'ollama-cloud'
-        other_value, _ = c.price(other, rates)
-        self.assertAlmostEqual(other_value, 0.15, places=6)
-        # A ClinePass row that lost the vendor prefix is unpriced rather than
-        # silently priced at another route's rate or at zero.
-        prefixless, _ = c.price(dict(row, model='deepseek-v4.1-flash'), rates)
-        self.assertIsNone(prefixless)
-        # Some clients write the id with the model vendor's own prefix instead.
-        # That shape is still a namespaced id, so the route's own rate applies.
-        self.assertAlmostEqual(c.price(dict(row, model='deepseek/deepseek-v4.1-flash'), rates)[0], 0.22, places=6)
-
-    def test_clinepass_pricing_charges_the_peak_window(self):
-        rates = c.load_rates()['document']
-        row = c.record('a', 'clinepass', 's', 0, 'cline-pass/deepseek-v4.1-flash', '/p', 'Hermes', input=1_000_000)
-        row['apiProvider'] = 'clinepass'
-        for moment, expected in ((dt.datetime(2026, 9, 21, 0, 59, tzinfo=dt.timezone.utc), 0.22),
-                                 (dt.datetime(2026, 9, 21, 1, 0, tzinfo=dt.timezone.utc), 0.44),
-                                 (dt.datetime(2026, 9, 21, 4, 0, tzinfo=dt.timezone.utc), 0.22),
-                                 (dt.datetime(2026, 9, 21, 9, 59, tzinfo=dt.timezone.utc), 0.44),
-                                 (dt.datetime(2026, 9, 21, 10, 0, tzinfo=dt.timezone.utc), 0.22)):
-            value, _ = c.price(dict(row, ts=moment.timestamp()), rates)
-            self.assertAlmostEqual(value, expected, places=6, msg=moment.isoformat())
-
     def test_settings_accepts_a_stdin_payload_and_masks_the_reply(self):
         # The UI sends the payload on stdin so a key never reaches argv.
         env = dict(os.environ, XDG_CONFIG_HOME=str(self.root / 'config'), XDG_STATE_HOME=str(self.root / 'state'))
         result = subprocess.run(
             [sys.executable, str(Path(__file__).parents[1] / 'collector.py'), 'settings', '--save'],
-            input='{"ollamaApiKey":"stdin-key","enabled":["ollama-cloud"]}',
+            input='{"commandcodeApiKey":"stdin-key","enabled":["commandcode"]}',
             capture_output=True, text=True, env=env, cwd=str(self.root))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn('stdin-key', result.stdout)
-        self.assertEqual(json.loads(result.stdout)['ollamaApiKey'], c.API_KEY_MASK)
+        self.assertEqual(json.loads(result.stdout)['commandcodeApiKey'], c.API_KEY_MASK)
         stored = json.loads((self.root / 'config/omarchy/ai-usage/settings.json').read_text())
-        self.assertEqual(stored['ollamaApiKey'], 'stdin-key')
+        self.assertEqual(stored['commandcodeApiKey'], 'stdin-key')
 
     def settings_save(self, env):
         """A settings save with a live, still-open stdin pipe, the way the
@@ -2784,39 +2555,28 @@ class CollectorTests(unittest.TestCase):
 
     def test_settings_channel_never_echoes_the_key(self):
         with patch.dict('os.environ', {'XDG_CONFIG_HOME': str(self.root / 'config')}):
-            saved = c.save_settings(c.DEFAULTS | {'ollamaApiKey': 'typed-key'})
-            self.assertEqual(saved['ollamaApiKey'], 'typed-key')
+            saved = c.save_settings(c.DEFAULTS | {'commandcodeApiKey': 'typed-key'})
+            self.assertEqual(saved['commandcodeApiKey'], 'typed-key')
             # A payload that omits the key entirely must leave it alone rather
             # than clear it (the form sends the mask when the field is
             # untouched, but a client may simply not send the field).
-            kept = c.save_settings({k: v for k, v in saved.items() if k != 'ollamaApiKey'})
-            self.assertEqual(kept['ollamaApiKey'], 'typed-key')
+            kept = c.save_settings({k: v for k, v in saved.items() if k != 'commandcodeApiKey'})
+            self.assertEqual(kept['commandcodeApiKey'], 'typed-key')
             # An explicit empty string is a deliberate clear.
-            cleared = c.save_settings(saved | {'ollamaApiKey': ''})
-            self.assertEqual(cleared['ollamaApiKey'], '')
+            cleared = c.save_settings(saved | {'commandcodeApiKey': ''})
+            self.assertEqual(cleared['commandcodeApiKey'], '')
 
-    def test_over_quota_window_is_clamped_not_dropped(self):
-        payload = {'limits': {'monthly': {'usage': 1.5}}}
-        with patch.dict('os.environ', {'OLLAMA_API_KEY': 'test-ollama-key', 'XDG_CONFIG_HOME': str(self.root / 'config'),
-                                       'XDG_DATA_HOME': str(self.root / 'data')}), \
-             patch.object(c.urllib.request, 'urlopen', side_effect=self.ollama_urlopen(payload)):
-            quota = c.ollama_quota(True)
-        # An over-limit plan shows as full, not as a credential failure.
-        self.assertEqual(quota['error'], '')
-        self.assertEqual(quota['limits'][0]['percent'], 1.0)
-        self.assertEqual(quota['limits'][0]['raw'], 1.5)
-
-    def test_settings_keep_a_stored_ollama_key_and_report_only_masks_it(self):
+    def test_settings_keep_a_stored_commandcode_key_and_report_only_masks_it(self):
         with patch.dict('os.environ', {'XDG_CONFIG_HOME': str(self.root / 'config')}):
-            saved = c.save_settings(c.DEFAULTS | {'enabled': ['ollama-cloud'], 'ollamaApiKey': 'typed-key'})
-            self.assertEqual(saved['ollamaApiKey'], 'typed-key')
+            saved = c.save_settings(c.DEFAULTS | {'enabled': ['commandcode'], 'commandcodeApiKey': 'typed-key'})
+            self.assertEqual(saved['commandcodeApiKey'], 'typed-key')
             # The report round trip carries the mask; saving it back keeps the key.
-            again = c.save_settings(c.DEFAULTS | saved | {'ollamaApiKey': c.API_KEY_MASK})
-            self.assertEqual(again['ollamaApiKey'], 'typed-key')
+            again = c.save_settings(c.DEFAULTS | saved | {'commandcodeApiKey': c.API_KEY_MASK})
+            self.assertEqual(again['commandcodeApiKey'], 'typed-key')
             ledger = c.Ledger(self.root / 'mask.sqlite')
             with patch.object(c, 'quota', return_value={'limits': []}), patch.object(c, 'account_quotas', return_value=({}, {})), patch.object(c, 'theme', return_value={}):
-                data = c.report(ledger, c.settings() | {'enabled': ['ollama-cloud']}, days=7)
-            self.assertEqual(data['settings']['ollamaApiKey'], c.API_KEY_MASK)
+                data = c.report(ledger, c.settings() | {'enabled': ['commandcode']}, days=7)
+            self.assertEqual(data['settings']['commandcodeApiKey'], c.API_KEY_MASK)
             ledger.db.close()
 
 

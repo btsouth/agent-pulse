@@ -54,13 +54,7 @@
         "antigravity": {
           "enabled": true
         },
-        "ollama-cloud": {
-          "enabled": true
-        },
         "commandcode": {
-          "enabled": true
-        },
-        "clinepass": {
           "enabled": true
         },
         "cursor": {

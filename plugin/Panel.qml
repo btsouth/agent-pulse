@@ -756,10 +756,15 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(460))
-    // Use the available screen height for the limits; fittedContentHeight
-    // still keeps the card clear of the bar and screen edges.
-    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(900))
+    // Size against the screen as well as the font, so a 1080p screen gets a
+    // card in the same proportion as a 1440p one instead of one that fills
+    // nearly the whole height. Both caps only ever shrink the full size.
+    contentWidth: panel.fittedContentWidth(panel.screenW > 0
+        ? Math.max(Style.space(380), Math.min(Style.space(460), Math.round(panel.screenW * 0.21)))
+        : Style.space(460))
+    contentHeight: panel.fittedContentHeight(column.implicitHeight, panel.availableCardHeight > 0
+        ? Math.min(Style.space(900), Math.round(panel.availableCardHeight * 0.72))
+        : Style.space(900))
 
     PanelKeyCatcher {
       id: keyCatcher

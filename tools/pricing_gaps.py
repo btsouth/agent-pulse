@@ -29,17 +29,15 @@ UPSTREAM = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_
 # The table that owns a route's rates, and the step that brings it current.
 OWNERS = {
     'opencode-go': ('pricing.json', 'python3 tools/update_go_pricing.py --write'),
-    'ollama-cloud': ('ollama-pricing.json', 'transcribe the published Ollama Cloud table'),
     'commandcode': ('commandcode-pricing.json', 'transcribe https://commandcode.ai/docs/resources/pricing-limits'),
     'commandcode-anthropic': ('commandcode-pricing.json', 'transcribe https://commandcode.ai/docs/resources/pricing-limits'),
-    'clinepass': ('clinepass-pricing.json', 'transcribe the ClinePass reference table in the Cline docs'),
     'muse': ('muse-pricing.json', 'transcribe the Muse published rates'),
     'grok': ('recorded costUsdTicks', 'no table: the app records this cost per turn'),
     'cursor': ('recorded list price', 'no table: the app records this value'),
 }
 DEFAULT_OWNER = ('catalog.json', 'python3 tools/update_catalog.py <upstream-commit-sha>')
-BUNDLED = ('catalog.json', 'pricing.json', 'ollama-pricing.json', 'commandcode-pricing.json',
-           'clinepass-pricing.json', 'codex-pricing.json', 'claude-pricing.json', 'muse-pricing.json')
+BUNDLED = ('catalog.json', 'pricing.json', 'commandcode-pricing.json',
+           'codex-pricing.json', 'claude-pricing.json', 'muse-pricing.json')
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--days', type=int, default=90, help='window of recorded usage to check')

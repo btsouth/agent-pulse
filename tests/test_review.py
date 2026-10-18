@@ -126,8 +126,43 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(result['updatedAt'], 'old')
         self.assertEqual(result['limits'][0]['percent'], .7)
 
+    def test_go_key_prefers_opencode_v2_credential(self):
+        import sqlite3
+        root = Path(os.environ['XDG_DATA_HOME']) / 'opencode'
+        c.atomic_json(root / 'auth.json', {'opencode-go': {'type': 'api', 'key': 'expired-v1'}})
+        self.assertEqual(c.go_api_key(), 'expired-v1')
+        conn = sqlite3.connect(root / 'opencode.db')
+        conn.execute('CREATE TABLE credential (id text PRIMARY KEY, integration_id text, label text NOT NULL, value text NOT NULL, '
+                     'connector_id text, method_id text, active integer, time_created integer NOT NULL, time_updated integer NOT NULL)')
+        conn.executemany('INSERT INTO credential VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?)', [
+            ('a', 'opencode-go', 'API key', json.dumps({'type': 'api', 'key': 'expired-v1'}), 0, 1, 3),
+            ('b', 'opencode-go', 'OpenCode Go', json.dumps({'type': 'api', 'key': 'current'}), 1, 2, 2),
+            ('c', 'openrouter', 'API key', json.dumps({'type': 'api', 'key': 'other'}), 1, 1, 4)])
+        conn.commit(); conn.close()
+        self.assertEqual(c.go_api_key(), 'current')
+
+    def test_retired_providers_leave_settings_and_ledger(self):
+        c.atomic_json(c.CONFIG, {'enabled': ['codex', 'ollama-cloud', 'clinepass'],
+                                 'ollamaApiKey': 'old-key', 'clinepassApiKey': 'old-key'})
+        cfg = c.settings()
+        self.assertEqual(cfg['enabled'], ['codex'])
+        self.assertNotIn('old-key', json.dumps(c.masked_settings(cfg)))
+        ledger = self.ledger()
+        for provider in ('codex', 'ollama-cloud', 'clinepass'):
+            ledger.put(c.record(provider, provider, 's', 1789000000, 'm', '/p', 'Hermes', input=10), '/source/' + provider)
+        c.purge_retired_providers(ledger)
+        self.assertEqual(ledger.db.execute('SELECT provider FROM events').fetchall(), [('codex',)])
+        self.assertEqual(ledger.db.execute('SELECT event_id FROM event_sources').fetchall(), [('codex',)])
+
+    def test_go_rejected_key_says_reconnect(self):
+        import urllib.error
+        with patch.object(c, 'go_api_key', return_value='synthetic'), \
+             patch.object(c.urllib.request, 'urlopen', side_effect=urllib.error.HTTPError('u', 401, 'expired', {}, None)):
+            result = c.go_quota(force=True)
+        self.assertIn('Reconnect Go in OpenCode', result['error'])
+
     def test_resale_routes_do_not_inherit_another_providers_price(self):
-        for provider in ('ollama-cloud', 'commandcode', 'clinepass'):
+        for provider in ('commandcode',):
             row = c.record('x', provider, 's', 1, 'unlisted', '', 'Hermes', input=10)
             self.assertEqual(c.price(row, {'unlisted': {'input_cost_per_token': 2}}), (None, None))
             self.assertEqual(c.price(row, {provider + '/unlisted': {'input_cost_per_token': 2}})[0], 20)

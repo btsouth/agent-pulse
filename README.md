@@ -75,7 +75,7 @@ The widget reads its settings from its entry in `bar.layout` in `~/.config/omarc
 ```json
 {
   "id": "community.ai-usage-dashboard",
-  "providerOrder": ["codex", "commandcode", "clinepass"],
+  "providerOrder": ["codex", "commandcode", "claude"],
   "extraProviders": ["codex-second"],
   "limitsRefreshIntervalSec": 60,
   "launchCommands": { "codex": "codex", "commandcode": "command-code" }
@@ -115,13 +115,11 @@ Claude's banked resets are added to each Claude card the same way, using the sig
 | Pi / Oh My Pi | Saved assistant usage | Not collected |
 | Muse | Completed model responses, including subagents | From the existing Muse login |
 | Antigravity | CLI and T3 Code conversations | From the local Antigravity CLI |
-| Ollama Cloud | T3 Code, Hermes agent sessions, and background work | From an Ollama Cloud API key |
 | CommandCode | T3 Code, Hermes agent sessions, and Command Code CLI transcripts | From a CommandCode API key: plan windows and the extra-credit balance |
-| ClinePass | T3 Code and Hermes agent sessions | From a ClinePass API key |
 | Cursor | Cloud usage events (tokens and list-price cost per model) | Billing-cycle usage from your Cursor sign-in |
-| Hermes (OpenCode Go, Ollama Cloud, CommandCode, ClinePass) | Agent sessions, including background work | Not collected; adds to the cards for those routes |
+| Hermes (OpenCode Go, CommandCode) | Agent sessions, including background work | Not collected; adds to the cards for those routes |
 
-Sources with recorded history appear automatically on a fresh install. Use **Settings** to choose which ones to show. OpenCode Go uses your existing API key; no cookie setup is needed. If Grok authentication expires, run `grok login`. Ollama Cloud, CommandCode, and ClinePass may need a key: type it in **Settings**, export `OLLAMA_API_KEY` / `COMMANDCODE_API_KEY` / `CLINE_API_KEY`, or put it in `~/.config/omarchy/ai-usage/ollama.key` / `commandcode.key` / `clinepass.key` (the key file an Ollama CLI install would use is also read, if one exists).
+Sources with recorded history appear automatically on a fresh install. Use **Settings** to choose which ones to show. OpenCode Go uses the API key saved in OpenCode (the 2.x credential store, or `auth.json` from 1.x); no cookie setup is needed. If Grok authentication expires, run `grok login`. CommandCode may need a key: type it in **Settings**, export `COMMANDCODE_API_KEY`, or put it in `~/.config/omarchy/ai-usage/commandcode.key`.
 
 T3 Code's custom provider instances are discovered from `~/.t3/userdata/settings.json`. Their isolated Codex, Claude, OpenCode, and Antigravity histories are read in place, and a CommandCode runtime is attributed to the CommandCode card rather than to Codex. Antigravity has no home path in that file, so its T3 conversation folders are found by globbing the T3 data directory.
 
@@ -140,13 +138,13 @@ Account labels group history, not credentials. **All accounts** shows the curren
 ## Understanding the numbers
 
 - **Processed tokens** count reused context on every request. They are not a count of unique text.
-- **API value** uses recorded estimates or catalog prices. OpenCode Go follows the documented model rates, including peak-hour doubling for DeepSeek and the per-model monthly allowances shown on the Go card. Ollama Cloud and CommandCode follow their own published rates, each including that provider's peak window for the DeepSeek models. ClinePass follows the reference rates its own documentation publishes for a flat-rate subscription. Codex usage is priced at the speed each turn requested, so Fast turns use Fast rates; turns with no recorded speed use Standard rates and are counted on the dashboard. It is not your subscription bill. Missing prices stay marked as unpriced.
+- **API value** uses recorded estimates or catalog prices. OpenCode Go follows the documented model rates, including peak-hour doubling for DeepSeek and the per-model monthly allowances shown on the Go card. CommandCode follows its own published rates, including its peak window for the DeepSeek models. Codex usage is priced at the speed each turn requested, so Fast turns use Fast rates; turns with no recorded speed use Standard rates and are counted on the dashboard. It is not your subscription bill. Missing prices stay marked as unpriced.
 - **Per-session averages** cover recorded activity in the selected period. A session is not a completed task or a model-efficiency benchmark.
 - **Models** are counted once per model across the routes that served it, so a model reached through more than one provider is a single row. Its detail shows the split by route and the model string each route recorded. Prices are unaffected: every route's tokens are priced at that route's own rates and then added up.
 - **Filter by model** under Filters to narrow the whole page to one model, across every route that served it. The summary, chart, source comparison, breakdown table, and Go allowance then describe only that model. A Models-table row also opens that model's sessions. Changing the period keeps the model filter.
 - **Exclude a source** under Filters to leave its history out of the view. The summary, chart, source comparison, and every breakdown update together. This is a view filter only: Settings controls visible providers and optional quota collection. Local transcript history continues to be indexed during scans. Use the source picker to focus on one source. Choosing **All sources** clears source exclusions and shows every enabled source again; other filters stay in place.
 
-History refreshes every 15 minutes, along with OpenCode Go, Ollama Cloud, CommandCode, ClinePass, and enabled Grok quota. **Refresh** also requests fresh Codex and Claude limits from Omarchy. See [pricing details](docs/pricing.md) for rates and accounting.
+History refreshes every 15 minutes, along with OpenCode Go, CommandCode, and enabled Grok quota. **Refresh** also requests fresh Codex and Claude limits from Omarchy. See [pricing details](docs/pricing.md) for rates and accounting.
 
 Reports are generated locally. Provider quota requests and Cursor history requests contact the provider using your existing credentials. Optional ledger sync writes counters and source paths into the folder you choose, which your sync software may transfer to another machine. See [network and privacy details](docs/provider-coverage.md#network-and-privacy). The ledger stores counters, model names, project paths, session IDs, and timestamps. It does not copy conversation bodies or credentials. There is no telemetry.
 

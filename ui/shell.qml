@@ -239,9 +239,7 @@ Scope {
     property string draftLedgerDeviceId: ""
     // The stored key never reaches this window; the report sends a mask, so
     // an untouched field means "keep what is stored" rather than an edit.
-    property string draftOllamaKey: ""
     property string draftCommandCodeKey: ""
-    property string draftClinePassKey: ""
     property string saveError: ""
     property var homeOptions: [
         {key:"codexHomes",name:"Codex homes",example:"/mnt/other-computer/.codex"},
@@ -270,8 +268,7 @@ Scope {
             gemini: palette.bright_magenta || "#c6a0d5", opencode: palette.bright_green || "#a7c080",
             pi: palette.bright_white || palette.bright_foreground || "#d4d4d4", omp: palette.red || "#d88b68",
             muse: palette.blue || "#7aa2f7", antigravity: palette.green || "#83c092",
-            "ollama-cloud": palette.orange || "#a2734b",
-            "commandcode": palette.bright_green || "#a7c080", "clinepass": palette.cyan || "#2dd5b7",
+            "commandcode": palette.bright_green || "#a7c080",
             cursor: palette.magenta || "#c586c0"})[id] || root.ink
         var color=Qt.darker(raw,1), background=luminance(root.base)
         for (var i=0;i<16;i++) {
@@ -516,7 +513,7 @@ Scope {
     function resetText(value) {
         var seconds = (Date.parse(value) - Date.now()) / 1000
         // No timestamp is not a state worth a permanent line: providers that
-        // report a share without a reset time (Ollama Cloud) would otherwise
+        // report a share without a reset time would otherwise
         // carry "Reset unavailable" under every meter forever, and the bar
         // panel already omits the line for the same case.
         if (!isFinite(seconds)) return ""
@@ -536,9 +533,7 @@ Scope {
         draftLocalLabel = s.localAccountLabel || "Local"
         draftLedgerSyncDir = s.ledgerSyncDir || ""
         draftLedgerDeviceId = s.ledgerDeviceId || ""
-        draftOllamaKey = s.ollamaApiKey || ""
         draftCommandCodeKey = s.commandcodeApiKey || ""
-        draftClinePassKey = s.clinepassApiKey || ""
         var prices = {}, homes = {}
         providerOptions.forEach(p => prices[p.id] = s.monthlyPrices && s.monthlyPrices[p.id] !== undefined ? String(s.monthlyPrices[p.id]) : "")
         draftAccounts.forEach(a => prices[a.id] = s.monthlyPrices && s.monthlyPrices[a.id] !== undefined ? String(s.monthlyPrices[a.id]) : "")
@@ -558,8 +553,8 @@ Scope {
             prices[p] = n
         }
         saveError = ""
-        var s = {updateCheck: draftUpdateCheck, accounts: draftAccounts, localAccountLabel: draftLocalLabel, enabled: draftEnabled, monthlyPrices: prices, windowOpacity: opacitySlider.value, clinepassApiKey: draftClinePassKey,
-                 ledgerSyncDir: draftLedgerSyncDir, ledgerDeviceId: draftLedgerDeviceId, ollamaApiKey: draftOllamaKey, commandcodeApiKey: draftCommandCodeKey}
+        var s = {updateCheck: draftUpdateCheck, accounts: draftAccounts, localAccountLabel: draftLocalLabel, enabled: draftEnabled, monthlyPrices: prices, windowOpacity: opacitySlider.value,
+                 ledgerSyncDir: draftLedgerSyncDir, ledgerDeviceId: draftLedgerDeviceId, commandcodeApiKey: draftCommandCodeKey}
         homeOptions.forEach(h => s[h.key] = (draftHomes[h.key] || "").split("\n").filter(x => x.trim()).map(x => x.trim()))
         save.command = ["python3", helper, "settings", "--save"]
         save.payload = JSON.stringify(s)
@@ -1919,16 +1914,10 @@ Scope {
                         }
                     }
                     Sub { visible: root.settingsTab === "pricing"; width: parent.width; wrapMode: Text.WordWrap; text: "Prices on a provider apply to the local history group; prices on a labelled account apply only to that account." }
-                    Sub { visible: root.settingsTab === "sources"; width: parent.width; wrapMode: Text.WordWrap; text: "Quota sources: Grok and Muse read their existing logins; Ollama Cloud, CommandCode, and ClinePass read a key here, an environment variable, or a key file under ~/.config/omarchy/ai-usage." }
-                    Label { visible: root.settingsTab === "sources"; text: "Ollama Cloud API key"; font.pixelSize: 16 }
-                    Sub { visible: root.settingsTab === "sources"; width: parent.width; wrapMode: Text.WordWrap; text: "Optional. Only needed for Ollama Cloud limits; token history works without it." }
-                    Field { visible: root.settingsTab === "sources"; width: 420; text: root.draftOllamaKey; placeholderText: "Not set"; echoMode: TextInput.Password; onTextEdited: root.draftOllamaKey = text; Accessible.name: "Ollama Cloud API key" }
+                    Sub { visible: root.settingsTab === "sources"; width: parent.width; wrapMode: Text.WordWrap; text: "Quota sources: Grok and Muse read their existing logins; OpenCode Go reads the key saved in OpenCode; CommandCode reads a key here, an environment variable, or a key file under ~/.config/omarchy/ai-usage." }
                     Label { visible: root.settingsTab === "sources"; text: "CommandCode API key"; font.pixelSize: 16 }
                     Sub { visible: root.settingsTab === "sources"; width: parent.width; wrapMode: Text.WordWrap; text: "Optional. Only needed for CommandCode plan limits; token history works without it." }
                     Field { visible: root.settingsTab === "sources"; width: 420; text: root.draftCommandCodeKey; placeholderText: "Not set"; echoMode: TextInput.Password; onTextEdited: root.draftCommandCodeKey = text; Accessible.name: "CommandCode API key" }
-                    Label { visible: root.settingsTab === "sources"; text: "ClinePass API key"; font.pixelSize: 16 }
-                    Sub { visible: root.settingsTab === "sources"; width: parent.width; wrapMode: Text.WordWrap; text: "Optional. Only needed for ClinePass plan limits; token history works without it." }
-                    Field { visible: root.settingsTab === "sources"; width: 420; text: root.draftClinePassKey; placeholderText: "Not set"; echoMode: TextInput.Password; onTextEdited: root.draftClinePassKey = text; Accessible.name: "ClinePass API key" }
                     Label { visible: root.settingsTab === "accounts"; text: "History accounts"; font.pixelSize: 16 }
                     Sub { visible: root.settingsTab === "accounts"; width: parent.width; wrapMode: Text.WordWrap; text: "Label agent home folders by account. Keep mirrored folders under the same account. Labels do not switch logins; quota is only for the current login on this PC." }
                     Field { visible: root.settingsTab === "accounts"; width: 260; text: root.draftLocalLabel; placeholderText: "Local account name"; onTextEdited: root.draftLocalLabel = text; Accessible.name: "Local account name" }
@@ -1963,7 +1952,7 @@ Scope {
                     Choice { visible: root.settingsTab === "accounts"; text: "Add account"; onClicked: { root.draftAccounts=root.draftAccounts.concat([{id:"account-"+Date.now()+"-"+Math.random().toString(36).slice(2,8),label:"",directories:[{provider:"codex",path:""}]}]) } }
                     Label { visible: root.settingsTab === "accounts"; text: "Unlabelled additional history folders"; font.pixelSize: 16 }
                     Sub { visible: root.settingsTab === "accounts"; width: parent.width; wrapMode: Text.WordWrap; text: "One full home-folder path per line, such as /mnt/other-computer/.codex. Use folders you have already mounted or synced. No remote connection is made. Copies with stable session IDs are deduplicated." }
-                    Repeater { model: root.homeOptions.filter(h => root.draftEnabled.indexOf(h.key.replace(/Homes$/, ""))>=0 || (h.key === "opencodeHomes" && root.draftEnabled.indexOf("opencode-go")>=0) || (h.key === "hermesHomes" && ["opencode-go", "ollama-cloud", "commandcode"].some(id => root.draftEnabled.indexOf(id) >= 0)))
+                    Repeater { model: root.homeOptions.filter(h => root.draftEnabled.indexOf(h.key.replace(/Homes$/, ""))>=0 || (h.key === "opencodeHomes" && root.draftEnabled.indexOf("opencode-go")>=0) || (h.key === "hermesHomes" && ["opencode-go", "commandcode"].some(id => root.draftEnabled.indexOf(id) >= 0)))
                         Column {
                             required property var modelData
                             visible: root.settingsTab === "accounts"

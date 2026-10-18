@@ -33,8 +33,6 @@ class InstallationTests(unittest.TestCase):
             self.assertTrue((runtime/'muse-pricing.json').exists())
             self.assertTrue((runtime/'codex-pricing.json').exists())
             self.assertTrue((runtime/'claude-pricing.json').exists())
-            self.assertTrue((runtime/'ollama-pricing.json').exists())
-            self.assertTrue((runtime/'clinepass-pricing.json').exists())
             run('--with-plugin');self.assertEqual(before,registry.read_bytes())
             launcher=home/'.local/bin'/APP
             self.assertEqual(shlex.split(launcher.read_text().splitlines()[1])[1],str(runtime/"launch.sh"))
@@ -142,7 +140,7 @@ class RecoveryTests(unittest.TestCase):
         import datetime as dt
         with tempfile.TemporaryDirectory() as tmp:
             home=Path(tmp)
-            env=dict(os.environ,HOME=tmp,AI_USAGE_DEMO='',OLLAMA_API_KEY='',COMMANDCODE_API_KEY='',CLINE_API_KEY='')
+            env=dict(os.environ,HOME=tmp,AI_USAGE_DEMO='',COMMANDCODE_API_KEY='')
             env.update({key:str(home/key.lower()) for key in (
                 'XDG_CONFIG_HOME','XDG_STATE_HOME','XDG_DATA_HOME','CODEX_HOME','CLAUDE_CONFIG_DIR',
                 'GROK_HOME','PI_CODING_AGENT_DIR','MUSE_HOME','CURSOR_HOME')})

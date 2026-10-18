@@ -58,7 +58,7 @@ Item {
 
   // The order the panel and the bar cycle walk agents in, set on this widget
   // in shell.json:
-  //   "providerOrder": ["codex", "commandcode", "clinepass"]
+  //   "providerOrder": ["codex", "commandcode", "claude"]
   // Ids not named here follow alphabetically, so an agent nobody listed still
   // appears instead of dropping off the end.
   //
@@ -334,7 +334,7 @@ Item {
   // the collecting. Set it on this widget in shell.json:
   //   "extraProviders": ["codex-second"]
   function isKnownProvider(id) {
-    if (["codex", "claude", "opencode-go", "grok", "gemini", "opencode", "pi", "omp", "muse", "antigravity", "ollama-cloud", "commandcode", "clinepass", "cursor", "fireworks"].indexOf(id) >= 0) return true
+    if (["codex", "claude", "opencode-go", "grok", "gemini", "opencode", "pi", "omp", "muse", "antigravity", "commandcode", "cursor", "fireworks"].indexOf(id) >= 0) return true
     var extra = setting("extraProviders", [])
     if (extra && typeof extra.length === "number") {
       for (var i = 0; i < extra.length; i++) {
@@ -873,8 +873,7 @@ Item {
   function modelFamily(id) {
     var name = String(id || "unknown")
     var explicit = {
-      "deepseek/deepseek-v4.1-flash": "deepseek-v4.1-flash",
-      "cline-pass/deepseek-v4.1-flash": "deepseek-v4.1-flash"
+      "deepseek/deepseek-v4.1-flash": "deepseek-v4.1-flash"
     }
     if (explicit[name]) return explicit[name]
     var bare = name.slice(name.lastIndexOf("/") + 1)
