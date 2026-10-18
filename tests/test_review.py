@@ -136,7 +136,7 @@ class ReviewTests(unittest.TestCase):
                      'connector_id text, method_id text, active integer, time_created integer NOT NULL, time_updated integer NOT NULL)')
         conn.executemany('INSERT INTO credential VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?)', [
             ('a', 'opencode-go', 'API key', json.dumps({'type': 'api', 'key': 'expired-v1'}), 0, 1, 3),
-            ('b', 'opencode-go', 'OpenCode Go', json.dumps({'type': 'api', 'key': 'current'}), 1, 2, 2),
+            ('b', 'opencode-go', 'OpenCode Go', json.dumps({'type': 'key', 'key': 'current'}), 1, 2, 2),
             ('c', 'openrouter', 'API key', json.dumps({'type': 'api', 'key': 'other'}), 1, 1, 4)])
         conn.commit(); conn.close()
         self.assertEqual(c.go_api_key(), 'current')

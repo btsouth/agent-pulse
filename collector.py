@@ -1650,7 +1650,8 @@ def go_api_key():
     for (raw,) in rows:
         try: auth = json.loads(raw)
         except ValueError: continue
-        if isinstance(auth, dict) and auth.get('type') == 'api' and auth.get('key'): return auth['key']
+        # 2.x writes type "key"; keys migrated from 1.x keep "api".
+        if isinstance(auth, dict) and auth.get('type') in ('key', 'api') and auth.get('key'): return auth['key']
     try: auth = json.loads((root / 'auth.json').read_text()).get('opencode-go', {})
     except (OSError, ValueError, AttributeError): return None
     return auth.get('key') if isinstance(auth, dict) and auth.get('type') == 'api' else None
