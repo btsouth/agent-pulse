@@ -12,17 +12,17 @@ from unittest.mock import patch
 import claude_limits
 
 GRANT = {'id': 'launch-grant', 'resets_total': 1, 'resets_left': 1,
-         'starts_at': '2026-09-22T16:00:00+00:00', 'ends_at': '2026-10-22T16:00:00+00:00'}
+         'starts_at': '2026-09-22T16:00:00+00:00', 'ends_at': '2099-10-22T16:00:00+00:00'}
 NOW = datetime(2026, 9, 23, tzinfo=timezone.utc)
 
 
 class BankedTests(unittest.TestCase):
     def test_counts_live_grants_and_reports_earliest_expiry(self):
-        later = dict(GRANT, id='later', resets_left=2, ends_at='2026-11-01T00:00:00+00:00')
+        later = dict(GRANT, id='later', resets_left=2, ends_at='2100-11-01T00:00:00+00:00')
         expired = dict(GRANT, id='expired', ends_at='2026-09-01T00:00:00+00:00')
         spent = dict(GRANT, id='spent', resets_left=0, ends_at='2026-09-24T00:00:00+00:00')
         block = {'eligible': True, 'grants': [later, GRANT, expired, spent]}
-        self.assertEqual(claude_limits.banked(block, NOW), (3, '2026-10-22T16:00:00+00:00'))
+        self.assertEqual(claude_limits.banked(block, NOW), (3, '2099-10-22T16:00:00+00:00'))
 
     def test_ineligible_account_has_none(self):
         self.assertEqual(claude_limits.banked({'eligible': False, 'ineligible_reason': 'tier'}, NOW), (0, ''))
@@ -61,6 +61,7 @@ class RefreshTests(unittest.TestCase):
         self.claude = claude
         self.share_dir = self.root / 'cache/claude-usage'
         self.env = {'HOME': str(self.root), 'XDG_STATE_HOME': str(self.root / 'state'),
+                    'XDG_CONFIG_HOME': str(self.root / 'config'),
                     'XDG_CACHE_HOME': str(self.root / 'cache'), 'CLAUDE_CONFIG_DIR': str(claude)}
         self.requests = []
 
@@ -85,6 +86,11 @@ class RefreshTests(unittest.TestCase):
         })
         (self.share_dir / (name + '.poll.json')).write_text(payload)
 
+    def seed_cache(self, fetched_at, count, folder=None):
+        self.cache.parent.mkdir(parents=True, exist_ok=True)
+        self.cache.write_text(json.dumps({'fetchedAt': fetched_at, 'count': count, 'expiresAt': '',
+                                          'folder': str(folder or self.claude)}))
+
     def run_main(self, argv=(), body=None, error=None):
         def response(req, timeout):
             self.requests.append(req)
@@ -100,7 +106,7 @@ class RefreshTests(unittest.TestCase):
     def test_writes_count_and_expiry_as_the_installed_cli(self):
         record = self.run_main(body={'cedar_ember': {'eligible': True, 'grants': [GRANT]}})
         self.assertEqual(record['resetCreditsAvailable'], 1)
-        self.assertEqual(record['resetCreditsExpiresAt'], '2026-10-22T16:00:00+00:00')
+        self.assertEqual(record['resetCreditsExpiresAt'], '2099-10-22T16:00:00+00:00')
         req = self.requests[0]
         self.assertIn('cedar_ember=1', req.full_url)
         self.assertEqual(req.get_header('Authorization'), 'Bearer claude-token')
@@ -136,7 +142,7 @@ class RefreshTests(unittest.TestCase):
     def test_t3_polling_uses_stale_shared_reading_without_request(self):
         body = {'cedar_ember': {'eligible': True, 'grants': [GRANT]}}
         self.cache.parent.mkdir(parents=True)
-        self.cache.write_text(json.dumps({'fetchedAt': time.time() - 600, 'count': 4, 'expiresAt': ''}))
+        self.seed_cache(time.time() - 600, 4)
         self.write_share(body, int((time.time() - 181) * 1000))
         self.write_poll(int(time.time() * 1000), int(time.time() * 1000))
         record = self.run_main(error=OSError('must not fetch'))
@@ -145,7 +151,7 @@ class RefreshTests(unittest.TestCase):
 
     def test_t3_polling_keeps_cached_answer_without_share(self):
         self.cache.parent.mkdir(parents=True)
-        self.cache.write_text(json.dumps({'fetchedAt': time.time() - 600, 'count': 2, 'expiresAt': ''}))
+        self.seed_cache(time.time() - 600, 2)
         self.write_poll(int(time.time() * 1000), int(time.time() * 1000))
         record = self.run_main(error=OSError('must not fetch'))
         self.assertEqual(record['resetCreditsAvailable'], 2)
@@ -166,7 +172,7 @@ class RefreshTests(unittest.TestCase):
 
     def test_t3_poll_backoff_keeps_ownership_after_attempt_window(self):
         self.cache.parent.mkdir(parents=True)
-        self.cache.write_text(json.dumps({'fetchedAt': time.time() - 600, 'count': 3, 'expiresAt': ''}))
+        self.seed_cache(time.time() - 600, 3)
         self.write_poll(int((time.time() - 1000) * 1000), int((time.time() + 3600) * 1000))
         record = self.run_main(error=OSError('must not fetch'))
         self.assertEqual(record['resetCreditsAvailable'], 3)
@@ -180,9 +186,9 @@ class RefreshTests(unittest.TestCase):
 
     def test_failed_read_keeps_a_recent_answer_then_goes_unknown(self):
         self.cache.parent.mkdir(parents=True)
-        self.cache.write_text(json.dumps({'fetchedAt': time.time() - 600, 'count': 1, 'expiresAt': ''}))
+        self.seed_cache(time.time() - 600, 1)
         self.assertEqual(self.run_main(error=OSError('429'))['resetCreditsAvailable'], 1)
-        self.cache.write_text(json.dumps({'fetchedAt': time.time() - 3600, 'count': 1, 'expiresAt': ''}))
+        self.seed_cache(time.time() - 3600, 1)
         self.assertIsNone(self.run_main(error=OSError('429'))['resetCreditsAvailable'])
 
     def test_rate_limit_waits_out_retry_after_even_when_forced(self):
@@ -205,7 +211,6 @@ class RefreshTests(unittest.TestCase):
         usage = self.record.parent
         (usage / 'claude-second.json').write_text(json.dumps({'id': 'claude-second', 'name': 'Claude Personal'}))
         (usage / 'claude-third.json').write_text(json.dumps({'id': 'claude-third', 'name': 'Claude Trial'}))
-        self.env['XDG_CONFIG_HOME'] = str(self.root / 'config')
 
         def response(req, timeout):
             self.requests.append(req)
@@ -219,10 +224,28 @@ class RefreshTests(unittest.TestCase):
         self.assertEqual(json.loads(self.record.read_text())['resetCreditsAvailable'], 0)
         personal = json.loads((usage / 'claude-second.json').read_text())
         self.assertEqual(personal['resetCreditsAvailable'], 1)
-        self.assertEqual(personal['resetCreditsExpiresAt'], '2026-10-22T16:00:00+00:00')
+        self.assertEqual(personal['resetCreditsExpiresAt'], '2099-10-22T16:00:00+00:00')
         # A record linked to no account folder is never given another login's count.
         self.assertNotIn('resetCreditsAvailable', json.loads((usage / 'claude-third.json').read_text()))
         self.assertEqual(len(self.requests), 2)
+
+    def test_cached_count_from_another_folder_is_not_reused(self):
+        self.seed_cache(time.time() - 10, 4, folder=self.root / '.claude-old')
+        record = self.run_main(body={'cedar_ember': {'eligible': True, 'grants': [GRANT]}})
+        self.assertEqual(record['resetCreditsAvailable'], 1)
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(json.loads(self.cache.read_text())['folder'], str(self.claude))
+
+    def test_unlinked_record_loses_its_count(self):
+        usage = self.record.parent
+        (usage / 'claude-second.json').write_text(json.dumps({
+            'id': 'claude-second', 'name': 'Claude Personal',
+            'resetCreditsAvailable': 2, 'resetCreditsExpiresAt': '2099-01-01T00:00:00+00:00'}))
+        self.run_main(body={'cedar_ember': {'eligible': True, 'grants': [GRANT]}})
+        personal = json.loads((usage / 'claude-second.json').read_text())
+        self.assertIsNone(personal['resetCreditsAvailable'])
+        self.assertEqual(personal['resetCreditsExpiresAt'], '')
+        self.assertEqual(len(self.requests), 1)
 
     def test_expired_sign_in_sends_nothing(self):
         (self.root / '.claude/.credentials.json').write_text(json.dumps({'claudeAiOauth': {
