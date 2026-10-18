@@ -122,6 +122,13 @@ def settings():
     for field in RETIRED_KEY_FIELDS: cfg.pop(field, None)
     if isinstance(cfg.get('enabled'), list):
         cfg['enabled'] = [p for p in cfg['enabled'] if p not in RETIRED_PROVIDERS]
+    # An account folder saved for a retired source would fail validation on
+    # every later save, so it is dropped with the source.
+    if isinstance(cfg.get('accounts'), list):
+        cfg['accounts'] = [a | {'directories': [d for d in a['directories']
+                                                if not (isinstance(d, dict) and d.get('provider') in RETIRED_PROVIDERS)]}
+                           if isinstance(a, dict) and isinstance(a.get('directories'), list) else a
+                           for a in cfg['accounts']]
     return cfg
 
 
@@ -970,6 +977,12 @@ def purge_retired_providers(ledger):
     ledger.db.execute(f'DELETE FROM event_sources WHERE event_id IN (SELECT id FROM events WHERE provider IN ({marks}))',
                       RETIRED_PROVIDERS)
     ledger.db.execute(f'DELETE FROM events WHERE provider IN ({marks})', RETIRED_PROVIDERS)
+    # This dashboard wrote their agent usage records and quota caches. Other
+    # panels list every record in that folder and would keep a frozen card.
+    for path in [STATE.parent / 'agents/usage' / (p + '.json') for p in RETIRED_PROVIDERS] + \
+                [STATE / 'ollama-quota.json', STATE / 'clinepass-quota.json']:
+        try: path.unlink()
+        except OSError: pass
 
 
 def purge_legacy_cursor(ledger):
@@ -1643,7 +1656,8 @@ def go_api_key():
     try:
         conn = sqlite3.connect((root / 'opencode.db').resolve().as_uri() + '?mode=ro', uri=True, timeout=3)
         try:
-            rows = conn.execute("SELECT value FROM credential WHERE integration_id='opencode-go' "
+            # A deactivated key is never used; a migrated row may have no flag.
+            rows = conn.execute("SELECT value FROM credential WHERE integration_id='opencode-go' AND active IS NOT 0 "
                                 'ORDER BY active IS 1 DESC, time_updated DESC').fetchall()
         finally: conn.close()
     except sqlite3.Error: rows = []

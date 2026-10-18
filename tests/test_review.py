@@ -136,21 +136,34 @@ class ReviewTests(unittest.TestCase):
                      'connector_id text, method_id text, active integer, time_created integer NOT NULL, time_updated integer NOT NULL)')
         conn.executemany('INSERT INTO credential VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?)', [
             ('a', 'opencode-go', 'API key', json.dumps({'type': 'api', 'key': 'expired-v1'}), 0, 1, 3),
+            ('d', 'opencode-go', 'Old', json.dumps({'type': 'key', 'key': 'deactivated'}), 0, 9, 9),
             ('b', 'opencode-go', 'OpenCode Go', json.dumps({'type': 'key', 'key': 'current'}), 1, 2, 2),
             ('c', 'openrouter', 'API key', json.dumps({'type': 'api', 'key': 'other'}), 1, 1, 4)])
-        conn.commit(); conn.close()
+        conn.commit()
         self.assertEqual(c.go_api_key(), 'current')
+        # With no active key, a deactivated one is skipped for auth.json.
+        conn.execute("DELETE FROM credential WHERE id='b'"); conn.commit(); conn.close()
+        self.assertEqual(c.go_api_key(), 'expired-v1')
 
     def test_retired_providers_leave_settings_and_ledger(self):
         c.atomic_json(c.CONFIG, {'enabled': ['codex', 'ollama-cloud', 'clinepass'],
-                                 'ollamaApiKey': 'old-key', 'clinepassApiKey': 'old-key'})
+                                 'ollamaApiKey': 'old-key', 'clinepassApiKey': 'old-key',
+                                 'accounts': [{'id': 'a', 'label': 'Work', 'directories': [
+                                     {'provider': 'codex', 'path': '/w/codex'}, {'provider': 'clinepass', 'path': '/w/oc'}]}]})
         cfg = c.settings()
         self.assertEqual(cfg['enabled'], ['codex'])
+        self.assertEqual(cfg['accounts'][0]['directories'], [{'provider': 'codex', 'path': '/w/codex'}])
+        c.save_settings(cfg)
         self.assertNotIn('old-key', json.dumps(c.masked_settings(cfg)))
         ledger = self.ledger()
         for provider in ('codex', 'ollama-cloud', 'clinepass'):
             ledger.put(c.record(provider, provider, 's', 1789000000, 'm', '/p', 'Hermes', input=10), '/source/' + provider)
+        records = c.STATE.parent / 'agents/usage'
+        for name in ('ollama-cloud', 'clinepass', 'codex'): c.atomic_json(records / (name + '.json'), {})
+        c.atomic_json(c.STATE / 'ollama-quota.json', {})
         c.purge_retired_providers(ledger)
+        self.assertEqual(sorted(p.name for p in records.iterdir()), ['codex.json'])
+        self.assertFalse((c.STATE / 'ollama-quota.json').exists())
         self.assertEqual(ledger.db.execute('SELECT provider FROM events').fetchall(), [('codex',)])
         self.assertEqual(ledger.db.execute('SELECT event_id FROM event_sources').fetchall(), [('codex',)])
 
