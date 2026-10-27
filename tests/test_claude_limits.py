@@ -200,6 +200,15 @@ class RefreshTests(unittest.TestCase):
                                           'folder': str(self.claude)}))
         self.assertIsNone(self.run_main(error=OSError('429')).get('resetCreditsAvailable'))
 
+    def test_fresh_count_past_its_expiry_is_read_again(self):
+        self.cache.parent.mkdir(parents=True)
+        self.cache.write_text(json.dumps({'fetchedAt': time.time() - 10, 'count': 1,
+                                          'expiresAt': '2020-01-01T00:00:00+00:00',
+                                          'folder': str(self.claude)}))
+        record = self.run_main(body={'cedar_ember': {'eligible': True, 'grants': []}})
+        self.assertEqual(record['resetCreditsAvailable'], 0)
+        self.assertEqual(len(self.requests), 1)
+
     def test_rate_limit_waits_out_retry_after_even_when_forced(self):
         limited = claude_limits.error.HTTPError(claude_limits.USAGE_URL, 429, 'Too Many Requests',
                                                 {'retry-after': '120'}, None)

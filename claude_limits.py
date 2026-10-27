@@ -197,12 +197,11 @@ def answer(cache, force, folder):
         last = (cached['count'], cached['expiresAt'])
     except (KeyError, TypeError, ValueError):
         age, last = None, None
-    stale = (None, '')
-    if last and age < STALE_SECONDS:
-        ends = parse_time(last[1]) if last[1] else None
-        # A count past its earliest expiry may have lost a reset.
-        if not ends or ends > datetime.now(timezone.utc):
-            stale = last
+    # A count past its earliest expiry may have lost a reset.
+    ends = parse_time(last[1]) if last and last[1] else None
+    if ends and ends <= datetime.now(timezone.utc):
+        last = None
+    stale = last if last and age < STALE_SECONDS else (None, '')
     if t3_polling(folder):
         shared = shared_reading(folder, max_age=None)
         if shared is not None:
