@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.12.1 - 2026-10-27
+
+- Claude banked resets no longer vanish while Anthropic's usage endpoint is rate limiting. The last good count now stands for 12 hours of failed reads instead of 30 minutes, and is dropped early once its expiry passes.
+
 ## 1.12.0 - 2026-10-18
 
 - OpenCode Go quota works again with OpenCode 2.x. OpenCode 2.x saves API keys in its own database and leaves the old `auth.json` behind, so the dashboard kept sending an expired key and the Go limits stopped updating. It now uses the active key from OpenCode's credential store, never a deactivated one, and falls back to `auth.json` for 1.x. A rejected key now says to reconnect Go in OpenCode.

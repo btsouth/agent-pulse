@@ -28,11 +28,13 @@ from urllib import error, request
 USAGE_URL = 'https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1'
 # The endpoint rate-limits quickly, and the panel refreshes on every open.
 # A fresh answer is reused without asking; after a failed read the last answer
-# stands a while longer before the count becomes unknown.
+# stands a while longer before the count becomes unknown. Resets change only
+# when one is granted, spent or expires, and the endpoint can refuse every
+# read for hours, so the last answer stands for half a day.
 FRESH_SECONDS = 300
 # T3 Code keeps a recent reading per Claude login in a shared cache.
 SHARE_FRESH_SECONDS = 180
-STALE_SECONDS = 1800
+STALE_SECONDS = 12 * 3600
 
 
 def claude_dir():
@@ -195,7 +197,12 @@ def answer(cache, force, folder):
         last = (cached['count'], cached['expiresAt'])
     except (KeyError, TypeError, ValueError):
         age, last = None, None
-    stale = last if last and age < STALE_SECONDS else (None, '')
+    stale = (None, '')
+    if last and age < STALE_SECONDS:
+        ends = parse_time(last[1]) if last[1] else None
+        # A count past its earliest expiry may have lost a reset.
+        if not ends or ends > datetime.now(timezone.utc):
+            stale = last
     if t3_polling(folder):
         shared = shared_reading(folder, max_age=None)
         if shared is not None:

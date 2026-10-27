@@ -188,8 +188,17 @@ class RefreshTests(unittest.TestCase):
         self.cache.parent.mkdir(parents=True)
         self.seed_cache(time.time() - 600, 1)
         self.assertEqual(self.run_main(error=OSError('429'))['resetCreditsAvailable'], 1)
-        self.seed_cache(time.time() - 3600, 1)
+        self.seed_cache(time.time() - 3 * 3600, 1)
+        self.assertEqual(self.run_main(error=OSError('429'))['resetCreditsAvailable'], 1)
+        self.seed_cache(time.time() - 13 * 3600, 1)
         self.assertIsNone(self.run_main(error=OSError('429'))['resetCreditsAvailable'])
+
+    def test_failed_read_drops_a_count_past_its_expiry(self):
+        self.cache.parent.mkdir(parents=True)
+        self.cache.write_text(json.dumps({'fetchedAt': time.time() - 600, 'count': 1,
+                                          'expiresAt': '2020-01-01T00:00:00+00:00',
+                                          'folder': str(self.claude)}))
+        self.assertIsNone(self.run_main(error=OSError('429')).get('resetCreditsAvailable'))
 
     def test_rate_limit_waits_out_retry_after_even_when_forced(self):
         limited = claude_limits.error.HTTPError(claude_limits.USAGE_URL, 429, 'Too Many Requests',
