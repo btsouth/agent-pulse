@@ -1,13 +1,27 @@
 {
   "source": "Claude Platform published model pricing",
   "url": "https://platform.claude.com/docs/en/about-claude/pricing",
-  "verifiedAt": "2026-10-07",
+  "verifiedAt": "2026-11-14",
   "notes": [
     "Direct Claude API-equivalent rates per million tokens. The five-minute and one-hour cache writes have separate published rates.",
     "Cache reads cost 0.05x base input on Opus 5.5 and Sonnet 5.5.",
     "Haiku 5.5 is priced by prompt length: a request over 100,000 tokens pays the higher rates on every category."
   ],
   "models": {
+    "claude/claude-fable-5-2": {
+      "input_cost_per_token": 0.000008,
+      "output_cost_per_token": 0.00004,
+      "cache_read_input_token_cost": 0.0000002,
+      "cache_creation_input_token_cost": 0.00001,
+      "cache_creation_input_token_cost_above_1hr": 0.000016
+    },
+    "claude/claude-mythos-5-2": {
+      "input_cost_per_token": 0.000008,
+      "output_cost_per_token": 0.00004,
+      "cache_read_input_token_cost": 0.0000002,
+      "cache_creation_input_token_cost": 0.00001,
+      "cache_creation_input_token_cost_above_1hr": 0.000016
+    },
     "claude/claude-opus-5-5": {
       "input_cost_per_token": 0.000004,
       "output_cost_per_token": 0.00002,
