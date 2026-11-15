@@ -287,6 +287,31 @@ class AccountTests(unittest.TestCase):
         self.assertEqual(counts['mine'][0][0], int((reset - dt.timedelta(hours=5)).timestamp()))
         self.assertEqual({index: tokens for index, (_, tokens) in counts['work'].items()}, {0: 7300, 1: 7300})
 
+    def test_window_tokens_count_from_a_spent_banked_reset(self):
+        self.add_at('before', 'local', 30, 900)
+        reset = self.now + dt.timedelta(days=3)
+        weekly = lambda percent, shift=0: {'mine': ({'codex'}, 'local', [
+            {'label': 'Weekly (7-day)', 'percent': percent,
+             'resetsAt': (reset + dt.timedelta(seconds=shift)).isoformat()}], 'codex')}
+        tokens = lambda targets, now: c.limit_window_tokens(self.ledger, self.cfg, targets, now)['mine'][0]
+        self.assertEqual(tokens(weekly(.8), self.now)[1], 900)
+        # Readings a point out of order are not a reset.
+        self.assertEqual(tokens(weekly(.79), self.now)[1], 900)
+        # The reset was spent: the percent falls, the reset time stays put.
+        spent = self.now + dt.timedelta(hours=1)
+        self.assertEqual(tokens(weekly(.02, shift=-1), spent), (int(spent.timestamp()), 0))
+        later = spent + dt.timedelta(hours=2)
+        self.add_at('after', 'local', -2, 40)
+        self.assertEqual(tokens(weekly(.1), later), (int(spent.timestamp()), 40))
+        # Another caller reading the same record under its own key agrees.
+        other = {'card': weekly(.1)['mine']}
+        self.assertEqual(c.limit_window_tokens(self.ledger, self.cfg, other, later)['card'][0][1], 40)
+        # The next window starts clean.
+        rolled = {'mine': ({'codex'}, 'local', [{'label': 'Weekly (7-day)', 'percent': 0,
+                                                 'resetsAt': (reset + dt.timedelta(days=7)).isoformat()}], 'codex')}
+        after = reset + dt.timedelta(hours=1)
+        self.assertEqual(tokens(rolled, after)[0], int(reset.timestamp()))
+
     def test_panel_snapshot_and_cards_carry_window_tokens(self):
         self.add_at('local', 'local', 1, 100)
         self.add_at('work', 'work', 1, 40)
