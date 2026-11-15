@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.12.2 - 2026-11-15
+
+- The tokens shown beside a weekly limit now start over when a banked reset is spent. A spent reset clears the limit but leaves its reset time where it was, so the count kept adding up the whole week. The dashboard now notices the limit's percent falling inside the same window and counts from that moment.
+
 ## 1.12.1 - 2026-10-27
 
 - Claude banked resets no longer vanish while Anthropic's usage endpoint is rate limiting. The last good count now stands for 12 hours of failed reads instead of 30 minutes, and is dropped early once its expiry passes.

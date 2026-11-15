@@ -4,6 +4,7 @@ import argparse
 import calendar
 import collections
 import datetime as dt
+import contextlib
 import fcntl
 import hashlib
 import math
@@ -1725,6 +1726,7 @@ def account_quotas():
         if not (d.get('limits') or d.get('usageStatusText') or d.get('chatgptCredits')): continue
         record = {'limits': d.get('limits', []), 'updatedAt': d.get('updatedAt'), 'error': d.get('usageStatusText', ''), 'plan': d.get('tierLabel', '')}
         record['provider'] = record_provider(path.stem, d)
+        record['record'] = path.stem
         if d.get('chatgptCredits'): record['chatgptCredits'] = d['chatgptCredits']
         by_id[path.stem] = record
         if d.get('name') and path.stem not in PROVIDERS:
@@ -2202,14 +2204,78 @@ def window_start(label, reset):
     return reset - dt.timedelta(**{unit: int(match.group(1))})
 
 
-def current_window(limit, now):
-    """A countable account window; model-only limits need their own scope."""
+def limit_reset(limit):
+    """When a countable account window resets; model-only limits need their own scope."""
     if not isinstance(limit, dict) or limit.get('title') or not limit.get('resetsAt'): return None
     try: reset = dt.datetime.fromisoformat(re.sub(r'(\.\d{6})\d+', r'\1', str(limit['resetsAt'])).replace('Z', '+00:00'))
     except ValueError: return None
-    if reset.tzinfo is None: reset = reset.replace(tzinfo=dt.timezone.utc)
-    start = window_start(limit.get('label'), reset)
+    return reset if reset.tzinfo else reset.replace(tzinfo=dt.timezone.utc)
+
+
+def current_window(limit, now):
+    """The start of a countable account window that is open now."""
+    reset = limit_reset(limit)
+    start = window_start(limit.get('label'), reset) if reset else None
     return start if start is not None and start <= now < reset else None
+
+
+# A weekly percent only climbs inside one window, and readings can arrive a
+# point or two out of order. A fall this large means a banked reset was spent.
+CLEARED_DROP = 0.05
+
+
+def cleared_windows(records, now):
+    """When each record's open windows were last cleared by a banked reset.
+
+    A spent reset empties the limit but leaves its reset time where it was,
+    and no provider says when it happened. So the percent last seen for each
+    window is kept, and a fall inside the same window marks the moment.
+    records maps a record id to its limits; the answer maps
+    (record id, index in limits) to that moment in epoch seconds.
+    """
+    path = STATE / 'limit-clears.json'
+    # The scan, the panel's pulse and the dashboard all pass through here and
+    # can overlap; one writing over another's reading would lose the moment.
+    # A report on a machine that has never scanned leaves no state behind.
+    if not STATE.is_dir(): return {}
+    try: lock = (STATE / 'limit-clears.lock').open('w')
+    except OSError: lock = None
+    with lock or contextlib.nullcontext():
+        if lock: fcntl.flock(lock, fcntl.LOCK_EX)
+        return note_cleared(path, records, now)
+
+
+def note_cleared(path, records, now):
+    try: seen = json.loads(path.read_text())
+    except (OSError, ValueError): seen = {}
+    if not isinstance(seen, dict): seen = {}
+    # Windows not asked about this time (another caller's records) are kept
+    # until they run out.
+    kept = {name: entry for name, entry in seen.items()
+            if isinstance(entry, dict) and float(entry.get('until') or 0) > now.timestamp()}
+    cleared = {}
+    for record, limits in records.items():
+        for index, limit in enumerate(limits or []):
+            if current_window(limit, now) is None: continue
+            percent = limit.get('percent')
+            name = record + '|' + str(limit.get('label') or '')
+            until, last = limit_reset(limit).timestamp(), kept.get(name)
+            # The reset time jitters by a second between readings.
+            if last and abs(float(last.get('until') or 0) - until) >= 3600: last = None
+            if isinstance(percent, (int, float)) and not isinstance(percent, bool):
+                entry = {'until': until, 'percent': percent}
+                if last and last.get('clearedAt'): entry['clearedAt'] = last['clearedAt']
+                if last and isinstance(last.get('percent'), (int, float)) and last['percent'] - percent > CLEARED_DROP - 1e-9:
+                    entry['clearedAt'] = int(now.timestamp())
+                kept[name] = entry
+            # A reading without a percent says nothing new; the window keeps its mark.
+            elif last: entry = last
+            else: continue
+            if entry.get('clearedAt'): cleared[(record, index)] = entry['clearedAt']
+    if kept != seen:
+        try: atomic_json(path, kept)
+        except OSError: pass
+    return cleared
 
 
 def account_views(ledger, cfg, labels, assignments, now):
@@ -2245,7 +2311,9 @@ def account_views(ledger, cfg, labels, assignments, now):
         views.append({'id': p + ':' + aid, 'provider': p, 'accountId': aid, 'name': name,
                       'recordId': record_id, 'quota': q, 'quotaScope': scope,
                       'historyAvailable': named.get(aid, {}).get('historyAvailable', True)})
-    counts = limit_window_tokens(ledger, cfg, {v['id']: ({v['provider']}, v['accountId'], v['quota'].get('limits'))
+    counts = limit_window_tokens(ledger, cfg, {v['id']: ({v['provider']}, v['accountId'], v['quota'].get('limits'),
+                                                      # A record found by name keeps its own id.
+                                                      v['quota'].get('record') or v['recordId'])
                                               for v in views if v['historyAvailable']}, now)
     for view in views:
         windows = counts.get(view['id'], {})
@@ -2263,15 +2331,19 @@ def limit_window_tokens(ledger, cfg, targets, now=None):
     ledger account whose history belongs to that login. The answer maps the
     same key to {index in limits: (window start, tokens)}. A window is left out
     when it names no reset, has already reset, is scoped to one model (it
-    carries a title), or its length cannot be read from the label.
+    carries a title), or its length cannot be read from the label. A window
+    cleared early by a banked reset counts from that moment. A target may
+    name its usage record as a fourth item; otherwise the key is the record.
     """
     now = now or dt.datetime.now().astimezone()
     windows, found = {}, {}
-    for key, (providers, account, limits) in targets.items():
+    records = {key: target[3] if len(target) > 3 else key for key, target in targets.items()}
+    cleared = cleared_windows({records[key]: target[2] for key, target in targets.items()}, now)
+    for key, (providers, account, limits, *_) in targets.items():
         for index, limit in enumerate(limits or []):
             start = current_window(limit, now)
             if start is None: continue
-            since = int(start.timestamp())
+            since = max(int(start.timestamp()), cleared.get((records[key], index), 0))
             found.setdefault(key, {})[index] = [since, 0]
             for provider in providers:
                 windows.setdefault((provider, account), []).append((since, found[key][index]))
