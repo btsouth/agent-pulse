@@ -2236,9 +2236,9 @@ def cleared_windows(records, now):
     path = STATE / 'limit-clears.json'
     # The scan, the panel's pulse and the dashboard all pass through here and
     # can overlap; one writing over another's reading would lose the moment.
-    try:
-        STATE.mkdir(parents=True, exist_ok=True)
-        lock = (STATE / 'limit-clears.lock').open('w')
+    # A report on a machine that has never scanned leaves no state behind.
+    if not STATE.is_dir(): return {}
+    try: lock = (STATE / 'limit-clears.lock').open('w')
     except OSError: lock = None
     with lock or contextlib.nullcontext():
         if lock: fcntl.flock(lock, fcntl.LOCK_EX)

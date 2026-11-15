@@ -289,6 +289,7 @@ class AccountTests(unittest.TestCase):
 
     def test_window_tokens_count_from_a_spent_banked_reset(self):
         self.add_at('before', 'local', 30, 900)
+        c.STATE.mkdir(parents=True, exist_ok=True)
         reset = self.now + dt.timedelta(days=3)
         weekly = lambda percent, shift=0: {'mine': ({'codex'}, 'local', [
             {'label': 'Weekly (7-day)', 'percent': percent,
@@ -321,6 +322,7 @@ class AccountTests(unittest.TestCase):
         reset = (self.now + dt.timedelta(days=2)).isoformat()
         weekly = [{'label': 'Weekly (7-day)', 'percent': .3, 'resetsAt': reset}]
         (usage / 'codex.json').write_text(json.dumps({'id': 'codex', 'name': 'Codex', 'limits': weekly}))
+        state.mkdir()
         # Matched to its account by name, the way the dashboard finds its limits.
         (usage / 'codex-work.json').write_text(json.dumps({'id': 'codex-work', 'name': 'work', 'limits': weekly}))
         (usage / 'stranger.json').write_text(json.dumps({'id': 'stranger', 'name': 'Nobody', 'limits': weekly}))
