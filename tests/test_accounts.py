@@ -304,9 +304,18 @@ class AccountTests(unittest.TestCase):
         later = spent + dt.timedelta(hours=2)
         self.add_at('after', 'local', -2, 40)
         self.assertEqual(tokens(weekly(.1), later), (int(spent.timestamp()), 40))
+        # A reading that carries no percent keeps the mark.
+        blank = weekly(.1)
+        del blank['mine'][2][0]['percent']
+        self.assertEqual(tokens(blank, later), (int(spent.timestamp()), 40))
         # Another caller reading the same record under its own key agrees.
         other = {'card': weekly(.1)['mine']}
         self.assertEqual(c.limit_window_tokens(self.ledger, self.cfg, other, later)['card'][0][1], 40)
+        # A fall of exactly five points counts.
+        five = lambda percent: {'five': ({'codex'}, 'local', [
+            {'label': 'Weekly (7-day)', 'percent': percent, 'resetsAt': reset.isoformat()}])}
+        c.limit_window_tokens(self.ledger, self.cfg, five(.95), self.now)
+        self.assertEqual(c.limit_window_tokens(self.ledger, self.cfg, five(.9), later)['five'][0][0], int(later.timestamp()))
         # The next window starts clean.
         rolled = {'mine': ({'codex'}, 'local', [{'label': 'Weekly (7-day)', 'percent': 0,
                                                  'resetsAt': (reset + dt.timedelta(days=7)).isoformat()}], 'codex')}

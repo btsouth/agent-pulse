@@ -2256,17 +2256,21 @@ def note_cleared(path, records, now):
     cleared = {}
     for record, limits in records.items():
         for index, limit in enumerate(limits or []):
-            percent = limit.get('percent') if current_window(limit, now) is not None else None
-            if not isinstance(percent, (int, float)) or isinstance(percent, bool): continue
+            if current_window(limit, now) is None: continue
+            percent = limit.get('percent')
             name = record + '|' + str(limit.get('label') or '')
-            until = limit_reset(limit).timestamp()
-            entry, last = {'until': until, 'percent': percent}, kept.get(name)
+            until, last = limit_reset(limit).timestamp(), kept.get(name)
             # The reset time jitters by a second between readings.
-            if last and abs(float(last.get('until') or 0) - until) < 3600:
-                if last.get('clearedAt'): entry['clearedAt'] = last['clearedAt']
-                if isinstance(last.get('percent'), (int, float)) and percent <= last['percent'] - CLEARED_DROP:
+            if last and abs(float(last.get('until') or 0) - until) >= 3600: last = None
+            if isinstance(percent, (int, float)) and not isinstance(percent, bool):
+                entry = {'until': until, 'percent': percent}
+                if last and last.get('clearedAt'): entry['clearedAt'] = last['clearedAt']
+                if last and isinstance(last.get('percent'), (int, float)) and last['percent'] - percent > CLEARED_DROP - 1e-9:
                     entry['clearedAt'] = int(now.timestamp())
-            kept[name] = entry
+                kept[name] = entry
+            # A reading without a percent says nothing new; the window keeps its mark.
+            elif last: entry = last
+            else: continue
             if entry.get('clearedAt'): cleared[(record, index)] = entry['clearedAt']
     if kept != seen:
         try: atomic_json(path, kept)
