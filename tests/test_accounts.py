@@ -334,6 +334,10 @@ class AccountTests(unittest.TestCase):
         self.assertEqual(snapshot['limitTokens']['codex-work'][0]['tokens'], 40)
         self.assertEqual(cards['local']['quota']['limits'][0]['tokens'], 100)
         self.assertNotIn('tokens', weekly[0])
+        # The panel and the cards keep one spent-reset marker per usage
+        # record, whether the card found its record by id or by name.
+        self.assertEqual(set(json.loads((state / 'limit-clears.json').read_text())),
+                         {'codex|Weekly (7-day)', 'codex-work|Weekly (7-day)'})
 
     def test_hourly_snapshot_splits_each_record_by_account(self):
         self.add_at('local', 'local', 1, 50)

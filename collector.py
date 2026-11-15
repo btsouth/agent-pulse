@@ -4,6 +4,7 @@ import argparse
 import calendar
 import collections
 import datetime as dt
+import contextlib
 import fcntl
 import hashlib
 import math
@@ -1725,6 +1726,7 @@ def account_quotas():
         if not (d.get('limits') or d.get('usageStatusText') or d.get('chatgptCredits')): continue
         record = {'limits': d.get('limits', []), 'updatedAt': d.get('updatedAt'), 'error': d.get('usageStatusText', ''), 'plan': d.get('tierLabel', '')}
         record['provider'] = record_provider(path.stem, d)
+        record['record'] = path.stem
         if d.get('chatgptCredits'): record['chatgptCredits'] = d['chatgptCredits']
         by_id[path.stem] = record
         if d.get('name') and path.stem not in PROVIDERS:
@@ -2232,6 +2234,18 @@ def cleared_windows(records, now):
     (record id, index in limits) to that moment in epoch seconds.
     """
     path = STATE / 'limit-clears.json'
+    # The scan, the panel's pulse and the dashboard all pass through here and
+    # can overlap; one writing over another's reading would lose the moment.
+    try:
+        STATE.mkdir(parents=True, exist_ok=True)
+        lock = (STATE / 'limit-clears.lock').open('w')
+    except OSError: lock = None
+    with lock or contextlib.nullcontext():
+        if lock: fcntl.flock(lock, fcntl.LOCK_EX)
+        return note_cleared(path, records, now)
+
+
+def note_cleared(path, records, now):
     try: seen = json.loads(path.read_text())
     except (OSError, ValueError): seen = {}
     if not isinstance(seen, dict): seen = {}
@@ -2293,7 +2307,9 @@ def account_views(ledger, cfg, labels, assignments, now):
         views.append({'id': p + ':' + aid, 'provider': p, 'accountId': aid, 'name': name,
                       'recordId': record_id, 'quota': q, 'quotaScope': scope,
                       'historyAvailable': named.get(aid, {}).get('historyAvailable', True)})
-    counts = limit_window_tokens(ledger, cfg, {v['id']: ({v['provider']}, v['accountId'], v['quota'].get('limits'), v['recordId'])
+    counts = limit_window_tokens(ledger, cfg, {v['id']: ({v['provider']}, v['accountId'], v['quota'].get('limits'),
+                                                      # A record found by name keeps its own id.
+                                                      v['quota'].get('record') or v['recordId'])
                                               for v in views if v['historyAvailable']}, now)
     for view in views:
         windows = counts.get(view['id'], {})
