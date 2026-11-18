@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Price GPT-6.2 Sol and GPT-6.2 Astra, including their long-context, Fast and Ultrafast rates, and refresh the LiteLLM rate snapshot. Sonnet 5.5 cache reads in the snapshot now match the $0.10 rate the dashboard already used.
+
 ## 1.12.2 - 2026-11-15
 
 - The tokens shown beside a weekly limit now start over when a banked reset is spent. A spent reset clears the limit but leaves its reset time where it was, so the count kept adding up the whole week. The dashboard now notices the limit's percent falling inside the same window and counts from that moment.

@@ -1620,6 +1620,24 @@ class CollectorTests(unittest.TestCase):
         self.assertAlmostEqual(c.price(edge, rates)[0],
                                (10_000 * .5 + 1_000 * 2.5 + 90_000 * .05 + 5_000 * .625) / 1e6)
 
+    def test_gpt_6_2_sol_and_astra_rates_by_tier(self):
+        rates = c.load_rates()['document']
+        def row(model, cached, **tiers):
+            return c.record('g', 'codex', 's', 1, model, '/p', 'CLI', input=125_000, output=50_000,
+                            cacheRead=cached, cacheWrite=25_000) | tiers
+        # Published per-million rates: input, cached input, 30-minute cache write, output.
+        # Above 272K input the full request pays 2x input and cache, 1.5x output.
+        for model, (i, r, w, o) in [('gpt-6.2-sol', (2, .1, 2.5, 10)), ('gpt-6.2-astra', (8, .4, 10, 40))]:
+            for cached, scale in [(22_000, (1, 1)), (122_001, (2, 1.5))]:
+                standard = (125_000 * i * scale[0] + cached * r * scale[0] + 25_000 * w * scale[0]
+                            + 50_000 * o * scale[1]) / 1e6
+                for tier, factor in [('default', 1), ('priority', 2), ('ultrafast', 3)]:
+                    with self.subTest(model=model, cached=cached, tier=tier):
+                        value = c.price(row(model, cached, requestedServiceTier=tier), rates)[0]
+                        self.assertAlmostEqual(value, standard * factor, places=9)
+            # GPT-6.2 has no Flex tier, so a Flex record stays unpriced.
+            self.assertEqual(c.price(row(model, 0, requestedServiceTier='flex'), rates), (None, None))
+
     def test_go_allowance_uses_monthly_window_and_promo(self):
         ledger = c.Ledger(self.root / 'allowance.sqlite')
         ledger.put(c.opencode_record('m1', 's', '2026-09-14T12:00:00Z', '/p', 'deepseek-v4.1-flash', 'opencode-go', {'input': 1_000_000}, 0))
