@@ -1442,7 +1442,8 @@ class CollectorTests(unittest.TestCase):
         # A tier with no published rate stays unpriced instead of borrowing Standard.
         spark = c.record('x', 'codex', 's', 1, 'gpt-5.3-codex-spark', '/p', 'CLI', input=1000) | {'requestedServiceTier': 'priority'}
         self.assertEqual(c.price(spark, rates), (None, None))
-        self.assertEqual(c.price(row(0, requestedServiceTier='ultrafast'), rates), (None, None))
+        # Ultrafast is published for GPT-6.1 Sol at 6x Standard.
+        self.assertAlmostEqual(c.price(row(0, requestedServiceTier='ultrafast'), rates)[0], (.25 + .5 + .0625) * 6, places=9)
         # Models without tier rates are not reported as a Standard assumption.
         opus = c.record('o', 'claude', 's', 1, 'claude-opus-5-5', '/p', 'CLI', input=1000)
         self.assertEqual(c.price_detail(opus, rates)[2], (None, None))
@@ -1619,6 +1620,30 @@ class CollectorTests(unittest.TestCase):
                         input=10_000, output=1_000, cacheRead=90_000, cacheWrite=5_000)
         self.assertAlmostEqual(c.price(edge, rates)[0],
                                (10_000 * .5 + 1_000 * 2.5 + 90_000 * .05 + 5_000 * .625) / 1e6)
+
+    def test_catalog_keeps_sonnet_4_5_long_context_band(self):
+        rates = c.load_rates()['document']
+        # Upstream dropped the retired 1M beta band; recorded requests keep their rate.
+        row = c.record('s', 'claude', 's', 1, 'claude-sonnet-4-5', '/p', 'CLI', input=250_000)
+        self.assertAlmostEqual(c.price(row, rates)[0], 1.5, places=9)
+
+    def test_gpt_6_2_sol_and_astra_rates_by_tier(self):
+        rates = c.load_rates()['document']
+        def row(model, cached, **tiers):
+            return c.record('g', 'codex', 's', 1, model, '/p', 'CLI', input=125_000, output=50_000,
+                            cacheRead=cached, cacheWrite=25_000) | tiers
+        # Published per-million rates: input, cached input, 30-minute cache write, output.
+        # Above 272K input the full request pays 2x input and cache, 1.5x output.
+        for model, (i, r, w, o) in [('gpt-6.2-sol', (2, .1, 2.5, 10)), ('gpt-6.2-astra', (8, .4, 10, 40))]:
+            for cached, scale in [(22_000, (1, 1)), (122_001, (2, 1.5))]:
+                standard = (125_000 * i * scale[0] + cached * r * scale[0] + 25_000 * w * scale[0]
+                            + 50_000 * o * scale[1]) / 1e6
+                for tier, factor in [('default', 1), ('priority', 2), ('ultrafast', 3)]:
+                    with self.subTest(model=model, cached=cached, tier=tier):
+                        value = c.price(row(model, cached, requestedServiceTier=tier), rates)[0]
+                        self.assertAlmostEqual(value, standard * factor, places=9)
+            # GPT-6.2 has no Flex tier, so a Flex record stays unpriced.
+            self.assertEqual(c.price(row(model, 0, requestedServiceTier='flex'), rates), (None, None))
 
     def test_go_allowance_uses_monthly_window_and_promo(self):
         ledger = c.Ledger(self.root / 'allowance.sqlite')

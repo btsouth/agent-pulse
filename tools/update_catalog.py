@@ -3,7 +3,9 @@
 
 A model upstream has dropped keeps the rate it last carried here: local history
 still holds its tokens, and a dropped entry silently turns already recorded usage
-into unpriced tokens long after the fact. Pass --drop-removed to mirror upstream.
+into unpriced tokens long after the fact. A rate field upstream drops from a model
+it still lists is kept the same way, so a retired long-context band still prices
+the requests recorded under it. Pass --drop-removed to mirror upstream.
 """
 import argparse
 import datetime as dt
@@ -30,6 +32,12 @@ path=Path(__file__).resolve().parents[1]/'catalog.json'
 try:previous=json.loads(path.read_text())['document']
 except (OSError,ValueError,KeyError,AttributeError):previous={}
 kept={} if args.drop_removed else {name:fields for name,fields in previous.items() if name not in models}
+kept_fields=0
+if not args.drop_removed:
+    for name,fields in models.items():
+        dropped={k:v for k,v in previous.get(name,{}).items() if k not in fields}
+        kept_fields+=len(dropped)
+        fields.update(dropped)
 added=sorted(set(models)-set(previous))
 changed=sorted(name for name in set(models)&set(previous)
                if any(previous[name].get(field)!=models[name].get(field) for field in BASE_FIELDS))
@@ -37,7 +45,7 @@ value={'source':'LiteLLM pricing snapshot','revision':args.revision,'url':url,
        'fetchedAtMs':int(dt.datetime.now().timestamp()*1000),'document':{**kept,**models}}
 path.write_text(json.dumps(value,indent=2,sort_keys=True)+'\n')
 print(f'{len(models)} eligible entries upstream: {len(added)} added, {len(changed)} with changed base rates, '
-      f'{len(kept)} kept after an upstream removal.')
+      f'{len(kept)} kept after an upstream removal, {kept_fields} rate fields kept that upstream dropped.')
 for name in added[:20]:print('  added  ',name)
 for name in changed[:20]:
     print('  changed',name,{field:(previous[name].get(field),models[name].get(field)) for field in BASE_FIELDS

@@ -12,7 +12,7 @@ Modifications include a separate plugin identity, dashboard action, selected pro
 
 `catalog.json` contains selected numeric pricing fields from `model_prices_and_context_window.json`, outside LiteLLM's enterprise directory. Original copyright: 2023 Berri AI. The complete upstream license notice, including the scope of its MIT license, is in `licenses/LiteLLM.txt`.
 
-Pinned source: https://github.com/BerriAI/litellm/blob/51514b9123a6569a0857bd7e941726c16def9bd2/model_prices_and_context_window.json
+Pinned source: https://github.com/BerriAI/litellm/blob/c030ffb6b9c7a1b49072dceca1c2224cdfc21bcc/model_prices_and_context_window.json
 
 ## OpenCode Go pricing facts
 
