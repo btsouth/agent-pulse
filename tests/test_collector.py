@@ -1442,7 +1442,8 @@ class CollectorTests(unittest.TestCase):
         # A tier with no published rate stays unpriced instead of borrowing Standard.
         spark = c.record('x', 'codex', 's', 1, 'gpt-5.3-codex-spark', '/p', 'CLI', input=1000) | {'requestedServiceTier': 'priority'}
         self.assertEqual(c.price(spark, rates), (None, None))
-        self.assertEqual(c.price(row(0, requestedServiceTier='ultrafast'), rates), (None, None))
+        # Ultrafast is published for GPT-6.1 Sol at 6x Standard.
+        self.assertAlmostEqual(c.price(row(0, requestedServiceTier='ultrafast'), rates)[0], (.25 + .5 + .0625) * 6, places=9)
         # Models without tier rates are not reported as a Standard assumption.
         opus = c.record('o', 'claude', 's', 1, 'claude-opus-5-5', '/p', 'CLI', input=1000)
         self.assertEqual(c.price_detail(opus, rates)[2], (None, None))
@@ -1619,6 +1620,12 @@ class CollectorTests(unittest.TestCase):
                         input=10_000, output=1_000, cacheRead=90_000, cacheWrite=5_000)
         self.assertAlmostEqual(c.price(edge, rates)[0],
                                (10_000 * .5 + 1_000 * 2.5 + 90_000 * .05 + 5_000 * .625) / 1e6)
+
+    def test_catalog_keeps_sonnet_4_5_long_context_band(self):
+        rates = c.load_rates()['document']
+        # Upstream dropped the retired 1M beta band; recorded requests keep their rate.
+        row = c.record('s', 'claude', 's', 1, 'claude-sonnet-4-5', '/p', 'CLI', input=250_000)
+        self.assertAlmostEqual(c.price(row, rates)[0], 1.5, places=9)
 
     def test_gpt_6_2_sol_and_astra_rates_by_tier(self):
         rates = c.load_rates()['document']

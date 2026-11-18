@@ -1,13 +1,14 @@
 {
   "source": "OpenAI API pricing and OpenCode model catalog (models.dev)",
   "url": "https://developers.openai.com/api/docs/pricing",
-  "verifiedAt": "2026-10-03",
+  "verifiedAt": "2026-11-18",
   "notes": [
     "gpt-5.3-codex-spark rates are the published openai entry in the catalog OpenCode uses ($1.75 input, $14 output, $0.175 cached input per million tokens).",
     "codex-auto-review has no published rate anywhere; it is marked internal so its tokens are excluded from the unpriced warning without inventing a price.",
     "GPT-6 Sol and Luna use OpenAI's published Standard rates, including the full-request long-context tier above 272K input tokens.",
     "GPT-6.1 Sol rates were verified against https://developers.openai.com/api/docs/models/gpt-6.1-sol on 2026-09-29: $2 input, $0.10 cached input, $2.50 cache writes, and $10 output per million tokens. Above 272K input tokens, input and cache rates double and output is 1.5x for the full request.",
-    "Fast (service_tier priority) and Flex rates were verified on 2026-10-03 against https://developers.openai.com/api/docs/pricing and the GPT-6.1 Sol, GPT-6 Sol and GPT-6 Luna model pages: Fast is 2x the applicable Standard rate, including the long-context rate, and Flex is 50%. They use the catalog's _priority and _flex key suffixes. Codex subscription allowance multipliers are separate and are not API prices."
+    "Fast (service_tier priority) and Flex rates were verified on 2026-10-03 against https://developers.openai.com/api/docs/pricing and the GPT-6.1 Sol, GPT-6 Sol and GPT-6 Luna model pages: Fast is 2x the applicable Standard rate, including the long-context rate, and Flex is 50%. They use the catalog's _priority and _flex key suffixes. Codex subscription allowance multipliers are separate and are not API prices.",
+    "GPT-6.1 Sol Ultrafast is 6x the applicable Standard rate, long-context included, per https://developers.openai.com/api/docs/models/gpt-6.1-sol on 2026-11-18. It uses the catalog's _ultrafast key suffix."
   ],
   "models": {
     "codex/gpt-6.1-sol": {
@@ -34,7 +35,15 @@
       "input_cost_per_token_above_272k_tokens_flex": 0.000002,
       "output_cost_per_token_above_272k_tokens_flex": 0.0000075,
       "cache_read_input_token_cost_above_272k_tokens_flex": 0.0000001,
-      "cache_creation_input_token_cost_above_272k_tokens_flex": 0.0000025
+      "cache_creation_input_token_cost_above_272k_tokens_flex": 0.0000025,
+      "input_cost_per_token_ultrafast": 0.000012,
+      "output_cost_per_token_ultrafast": 0.00006,
+      "cache_read_input_token_cost_ultrafast": 0.0000006,
+      "cache_creation_input_token_cost_ultrafast": 0.000015,
+      "input_cost_per_token_above_272k_tokens_ultrafast": 0.000024,
+      "output_cost_per_token_above_272k_tokens_ultrafast": 0.00009,
+      "cache_read_input_token_cost_above_272k_tokens_ultrafast": 0.0000012,
+      "cache_creation_input_token_cost_above_272k_tokens_ultrafast": 0.00003
     },
     "codex/gpt-6-sol": {
       "input_cost_per_token": 0.000002,

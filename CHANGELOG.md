@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Price GPT-6.2 Sol and GPT-6.2 Astra, including their long-context, Fast and Ultrafast rates, and refresh the LiteLLM rate snapshot. Sonnet 5.5 cache reads in the snapshot now match the $0.10 rate the dashboard already used.
+- Price GPT-6.1 Sol Ultrafast at 6x Standard. A catalog refresh now keeps rate fields upstream drops, such as Sonnet 4.5's retired long-context band, so older history keeps its value.
 
 ## 1.12.2 - 2026-11-15
 
