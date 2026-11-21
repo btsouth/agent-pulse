@@ -20,6 +20,7 @@ parser.add_argument('--theme', choices=['dark', 'light'], default='dark', help='
 parser.add_argument('--clock-format', choices=['12', '24'], default='12', help='synthetic Omarchy bar clock format')
 parser.add_argument('--agents',help='comma-separated providers to enable, default all')
 parser.add_argument('--width',type=int,default=1200,help='dashboard width, at least 1000')
+parser.add_argument('--account-view',default='codex:local',help='account card shown by --view account, e.g. antigravity:local')
 args=parser.parse_args()
 with tempfile.TemporaryDirectory(prefix='usage-dashboard-demo-') as tmp:
     base=Path(tmp);env=dict(os.environ)
@@ -89,6 +90,21 @@ with tempfile.TemporaryDirectory(prefix='usage-dashboard-demo-') as tmp:
         'balance': {'label': 'Extra credits', 'remaining': 8.47, 'spent': 1.53, 'funded': 10.0,
                     'currency': 'USD', 'estimated': True},
         'updatedAt': dt.datetime.now(dt.timezone.utc).isoformat(), 'error': '', 'plan': 'GOAT'})
+    # Antigravity's quota groups as its CLI reports them, and a second Google
+    # account linked to the Work history by name. Every figure is synthetic.
+    soon = lambda hours: (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=hours)).isoformat()
+    groups = [('Gemini 5-hour', 'Gemini · 5-hour', 0.6, 2, r'^gemini(?!.*argon)', 'Gemini 4 Neon, Gemini 4 Hydrogen, Gemini 3.8 Flash'),
+              ('Gemini weekly', 'Gemini · Weekly', 0.31, 150, r'^gemini(?!.*argon)', 'Gemini 4 Neon, Gemini 4 Hydrogen, Gemini 3.8 Flash'),
+              ('Claude/GPT 5-hour', 'Claude & GPT · 5-hour', 0.0, 5, r'^(claude|gpt)', 'Claude Opus 5.5, Claude Sonnet 5.5, GPT-OSS 120B'),
+              ('Claude/GPT weekly', 'Claude & GPT · Weekly', 0.12, 160, r'^(claude|gpt)', 'Claude Opus 5.5, Claude Sonnet 5.5, GPT-OSS 120B'),
+              ('Gemini 4 Argon weekly', 'Gemini 4 Argon · Weekly', 0.0, 168, r'argon', '')]
+    antigravity_limits = [{'label': label, 'title': title, 'percent': percent, 'resetsAt': soon(hours), 'modelPattern': pattern,
+                           **({'detail': detail} if detail else {})} for label, title, percent, hours, pattern, detail in groups]
+    c.atomic_json(c.STATE / 'antigravity-quota.json', {'limits': antigravity_limits, 'plan': 'Google AI Pro', 'error': '',
+                                                       'updatedAt': dt.datetime.now(dt.timezone.utc).isoformat()})
+    c.atomic_json(c.STATE.parent / 'agents/usage/antigravity-work.json', {
+        'id': 'antigravity-work', 'name': 'Work', 'provider': 'antigravity', 'writer': 'agent-pulse', 'tierLabel': 'Google AI Pro',
+        'limits': [dict(limit, percent=round(limit['percent'] / 2, 2)) for limit in antigravity_limits]})
     ledger.db.commit()
     c.atomic_json(c.STATE / 'hourly-summary.json', c.hourly_snapshot(ledger))
     ledger.db.close()
@@ -111,7 +127,7 @@ with tempfile.TemporaryDirectory(prefix='usage-dashboard-demo-') as tmp:
             # Allow the initial report to finish, then capture the populated view.
             time.sleep(1)
             if args.view != 'overview':
-                command = (['accountView', 'codex:local'] if args.view in ('account', 'reset') else
+                command = (['accountView', args.account_view] if args.view in ('account', 'reset') else
                            ['preferences'] if args.view == 'settings' else
                            ['period', '1'] if args.view == 'today' else
                            ['firstHour'] if args.view == 'hour' else

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 1.13.0 - 2026-11-20
+
+- Show every Antigravity quota group. Gemini models, Claude and GPT models, and Gemini 4 Argon each get their own meters, titled after the group ("Gemini · Weekly", "Claude & GPT · 5-hour", "Gemini 4 Argon · Weekly"), instead of Argon's weekly window appearing as a second "Gemini weekly" and every window reading as plain "Session" or "Weekly" in the bar panel. Existing pins keep working. The dashboard lists the models each group covers.
+- Count tokens per Antigravity group. The tokens beside a window, and View usage on it, now cover only that group's models. Before, every Antigravity window counted every model's tokens.
+- Show each Antigravity account. A T3 Code Antigravity instance signed in to a Google account of its own gets its own bar panel source and dashboard account, with its own limits, plan, and history, named as T3 names the instance. Its conversations no longer count toward the main account.
+- Show the Antigravity plan (for example Google AI Pro) on the account card and in the bar panel.
+- Agent Pulse no longer lets `agy` update itself while it reads quota.
+- A labelled account whose name already starts with its provider is shown as is ("Claude Personal" rather than "Claude · Claude Personal").
 - Price GPT-6.2 Sol and GPT-6.2 Astra, including their long-context, Fast and Ultrafast rates, and refresh the LiteLLM rate snapshot. Sonnet 5.5 cache reads in the snapshot now match the $0.10 rate the dashboard already used.
 - Price GPT-6.1 Sol Ultrafast at 6x Standard. A catalog refresh now keeps rate fields upstream drops, such as Sonnet 4.5's retired long-context band, so older history keeps its value.
 

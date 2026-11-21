@@ -335,6 +335,9 @@ Item {
   //   "extraProviders": ["codex-second"]
   function isKnownProvider(id) {
     if (["codex", "claude", "opencode-go", "grok", "gemini", "opencode", "pi", "omp", "muse", "antigravity", "commandcode", "cursor", "fireworks"].indexOf(id) >= 0) return true
+    // Each further Antigravity sign-in (a T3 Code instance with its own
+    // Google account) gets its own record from the dashboard's collector.
+    if (/^antigravity-[a-z0-9-]+$/.test(id)) return true
     var extra = setting("extraProviders", [])
     if (extra && typeof extra.length === "number") {
       for (var i = 0; i < extra.length; i++) {
