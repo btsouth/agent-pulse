@@ -1298,6 +1298,27 @@ class CollectorTests(unittest.TestCase):
             self.assertFalse([i for i in ids if i.startswith('home-')])
             ledger.db.close()
 
+    def test_bound_record_never_serves_an_account_named_after_its_file(self):
+        with patch.object(c, 'STATE', self.root / 'state'), patch.object(c, 'HOME', self.root), \
+             patch.dict('os.environ', self.sandbox_env()):
+            import hashlib
+            root = self.root / '.t3/userdata/providers/antigravity' / hashlib.sha256(b'antigravity_two').hexdigest() / 'antigravity-acp'
+            named = {'id': 'antigravity-one', 'label': 'Mine', 'directories': [{'provider': 'antigravity', 'path': str(root)}]}
+            ledger, cfg, _ = self.antigravity_two_profiles(['A', 'B'], enabled=(True, False), accounts=[named])
+            views = {v['accountId']: v for v in c.report(ledger, cfg, days=1)['accountViews']}
+            self.assertEqual(views['antigravity-one']['quota']['limits'], [])
+            ledger.db.close()
+
+    def test_named_folder_inside_a_legacy_antigravity_home_keeps_the_home(self):
+        with patch.object(c, 'STATE', self.root / 'state'), patch.object(c, 'HOME', self.root), \
+             patch.dict('os.environ', self.sandbox_env()):
+            home = self.root / 'mounted/antigravity-cli'
+            named = {'id': 'archived', 'label': 'Archived', 'directories': [{'provider': 'antigravity', 'path': str(home / 'archived-home')}]}
+            cfg = c.DEFAULTS | {'enabled': ['antigravity'], 'accounts': [named], 'antigravityHomes': [str(home)]}
+            ids = [a['id'] for a in c.history_config(cfg)['accounts']]
+            self.assertIn('archived', ids)
+            self.assertTrue([i for i in ids if i.startswith('home-')])
+
     def test_antigravity_single_account_record_is_unchanged(self):
         with patch.object(c, 'STATE', self.root / 'state'), patch.object(c, 'HOME', self.root), \
              patch.dict('os.environ', self.sandbox_env()):

@@ -260,9 +260,9 @@ def history_config(cfg):
         if provider in defaults and root == defaults[provider].resolve(): return
         if any(d['provider'] == provider and root.is_relative_to(Path(d['path']).expanduser().resolve())
                for a in accounts for d in a['directories']): return
-        # An Antigravity login is one folder: a named account holding any part
-        # of it (its conversations folder) owns all of it.
-        if provider == 'antigravity' and any(d['provider'] == provider and Path(d['path']).expanduser().resolve().is_relative_to(root)
+        # An Antigravity login's history is its conversations folder: a named
+        # account holding that folder owns the login.
+        if provider == 'antigravity' and any(d['provider'] == provider and (root / 'conversations').is_relative_to(Path(d['path']).expanduser().resolve())
                                              for a in accounts for d in a['directories']): return
         accounts.append({'id': aid, 'label': label, 'directories': [{'provider': provider, 'path': str(root)}],
                          'discovered': True})
@@ -1744,6 +1744,7 @@ def account_quotas():
         record = {'limits': d.get('limits', []), 'updatedAt': d.get('updatedAt'), 'error': d.get('usageStatusText', ''), 'plan': d.get('tierLabel', '')}
         record['provider'] = record_provider(path.stem, d)
         record['record'] = path.stem
+        if d.get('account'): record['account'] = d['account']
         if d.get('chatgptCredits'): record['chatgptCredits'] = d['chatgptCredits']
         by_id[path.stem] = record
         if d.get('name') and path.stem not in PROVIDERS and not d.get('account'):
@@ -2538,6 +2539,8 @@ def account_views(ledger, cfg, labels, assignments, now):
             q = None if aid in PROVIDERS or aid in ('unassigned', 'conflict') or aid.startswith('machine:') else (
                 by_id.get(p + ':' + aid) or by_id.get(record_id) or (None if a.get('quotaBound') else by_name.get(label.casefold())))
             if q is not None and q.get('provider') not in (None, p): q = None
+            # A record bound to its ledger account serves that account only.
+            if q is not None and q.get('account') not in (None, aid): q = None
             scope = 'From its own usage record' if q is not None else ''
             q = q or {'limits': [], 'error': 'No quota record linked to this account; current login quota belongs to its own account.'}
             # A label that already names its provider ("Antigravity-Becca",
