@@ -260,6 +260,10 @@ def history_config(cfg):
         if provider in defaults and root == defaults[provider].resolve(): return
         if any(d['provider'] == provider and root.is_relative_to(Path(d['path']).expanduser().resolve())
                for a in accounts for d in a['directories']): return
+        # An Antigravity login is one folder: a named account holding any part
+        # of it (its conversations folder) owns all of it.
+        if provider == 'antigravity' and any(d['provider'] == provider and Path(d['path']).expanduser().resolve().is_relative_to(root)
+                                             for a in accounts for d in a['directories']): return
         accounts.append({'id': aid, 'label': label, 'directories': [{'provider': provider, 'path': str(root)}],
                          'discovered': True})
     for instance in t3_provider_instances():
@@ -269,14 +273,10 @@ def history_config(cfg):
         add_home(instance['provider'], instance['root'], 't3-' + digest(instance['id'])[:16], instance['label'])
     # T3 keeps no home path for Antigravity. An instance with a sign-in of its
     # own is another Google account; one on the keyring is the main login.
-    # Its quota is bound to the record written for it, never found by name,
-    # and a named account holding any part of its folder already owns it.
+    # Its quota is bound to the record written for it, never found by name.
     for profile in antigravity_profiles(include_disabled=True):
-        root = Path(profile['root']).resolve()
-        if any(d['provider'] == 'antigravity' and Path(d['path']).expanduser().resolve().is_relative_to(root)
-               for a in accounts for d in a['directories']): continue
         before = len(accounts)
-        add_home('antigravity', root, 't3-' + digest(profile['id'])[:16], profile['name'])
+        add_home('antigravity', profile['root'], 't3-' + digest(profile['id'])[:16], profile['name'])
         if len(accounts) > before: accounts[-1]['quotaBound'] = True
     for key in HOME_KEYS:
         provider = key.removesuffix('Homes')
@@ -289,9 +289,13 @@ def history_config(cfg):
     records = agent_records()
     for key, record in records.items():
         if key in PROVIDERS: continue
-        # A record that names its ledger account is bound to it, whatever its name.
-        matches = [a for a in accounts if record.get('account') and a['id'] == record['account']]
-        matches = matches or [a for a in accounts if a['id'] == key or any(key == d['provider'] + ':' + a['id'] for d in a['directories'])]
+        # A record that names its ledger account is bound to it alone, whatever
+        # its name; one whose account is gone links to nothing until rewritten.
+        if record.get('account'):
+            for a in accounts:
+                if a['id'] == record['account']: a['recordId'] = key
+            continue
+        matches = [a for a in accounts if a['id'] == key or any(key == d['provider'] + ':' + a['id'] for d in a['directories'])]
         if not matches:
             matches = [a for a in accounts if record.get('name') and a['label'].casefold() == str(record['name']).casefold()]
         if len(matches) == 1:
@@ -1742,7 +1746,7 @@ def account_quotas():
         record['record'] = path.stem
         if d.get('chatgptCredits'): record['chatgptCredits'] = d['chatgptCredits']
         by_id[path.stem] = record
-        if d.get('name') and path.stem not in PROVIDERS:
+        if d.get('name') and path.stem not in PROVIDERS and not d.get('account'):
             name = str(d['name']).casefold()
             by_name[name] = record if name not in by_name else None
     return by_id, by_name
@@ -2626,7 +2630,7 @@ def record_targets(cfg):
             continue
         name = str(d.get('name') or '').casefold()
         bound = next((a for a in cfg.get('accounts', []) if d.get('account') and a['id'] == d['account']), None)
-        account = bound or next((a for a in cfg.get('accounts', [])
+        account = bound if d.get('account') else next((a for a in cfg.get('accounts', [])
                         if a.get('recordId', a['id']) == path.stem or path.stem == a['id']
                         or path.stem == 'codex:' + a['id'] or (name and str(a['label']).casefold() == name)), None)
         if account:

@@ -1273,6 +1273,31 @@ class CollectorTests(unittest.TestCase):
             self.assertEqual(c.record_targets(cfg)['antigravity-one'][0], {'antigravity'})
             ledger.db.close()
 
+    def test_named_owner_of_a_disabled_profile_never_borrows_a_same_named_quota(self):
+        with patch.object(c, 'STATE', self.root / 'state'), patch.object(c, 'HOME', self.root), \
+             patch.dict('os.environ', self.sandbox_env()):
+            import hashlib
+            root = self.root / '.t3/userdata/providers/antigravity' / hashlib.sha256(b'antigravity_two').hexdigest() / 'antigravity-acp'
+            named = {'id': 'mine', 'label': 'Shared', 'directories': [{'provider': 'antigravity', 'path': str(root)}]}
+            ledger, cfg, _ = self.antigravity_two_profiles(['Shared', 'Shared'], enabled=(True, False), accounts=[named])
+            views = {v['accountId']: v for v in c.report(ledger, cfg, days=1)['accountViews']}
+            self.assertEqual(views["mine"]["quota"]["limits"], [])
+            self.assertEqual(views['t3-' + c.digest('antigravity_one')[:16]]['quota']['plan'], 'Plan 0')
+            ledger.db.close()
+
+    def test_legacy_antigravity_home_adds_no_empty_account_beside_a_named_folder(self):
+        with patch.object(c, 'STATE', self.root / 'state'), patch.object(c, 'HOME', self.root), \
+             patch.dict('os.environ', self.sandbox_env()):
+            import hashlib
+            root = self.root / '.t3/userdata/providers/antigravity' / hashlib.sha256(b'antigravity_one').hexdigest() / 'antigravity-acp'
+            named = {'id': 'custom', 'label': 'Custom label', 'directories': [{'provider': 'antigravity', 'path': str(root / 'conversations')}]}
+            ledger, cfg, _ = self.antigravity_two_profiles(['Work', 'Other'], accounts=[named])
+            cfg = cfg | {'antigravityHomes': [str(root)]}
+            ids = [v['accountId'] for v in c.report(ledger, cfg, days=1)['accountViews']]
+            self.assertIn('custom', ids)
+            self.assertFalse([i for i in ids if i.startswith('home-')])
+            ledger.db.close()
+
     def test_antigravity_single_account_record_is_unchanged(self):
         with patch.object(c, 'STATE', self.root / 'state'), patch.object(c, 'HOME', self.root), \
              patch.dict('os.environ', self.sandbox_env()):
