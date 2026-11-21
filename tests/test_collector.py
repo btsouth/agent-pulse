@@ -1307,6 +1307,9 @@ class CollectorTests(unittest.TestCase):
             ledger, cfg, _ = self.antigravity_two_profiles(['A', 'B'], enabled=(True, False), accounts=[named])
             views = {v['accountId']: v for v in c.report(ledger, cfg, days=1)['accountViews']}
             self.assertEqual(views['antigravity-one']['quota']['limits'], [])
+            # Opening the record from the bar lands on its own account only.
+            owners = [v['accountId'] for v in views.values() if v['recordId'] == 'antigravity-one']
+            self.assertEqual(owners, ['t3-' + c.digest('antigravity_one')[:16]])
             ledger.db.close()
 
     def test_named_folder_inside_a_legacy_antigravity_home_keeps_the_home(self):
@@ -1318,6 +1321,16 @@ class CollectorTests(unittest.TestCase):
             ids = [a['id'] for a in c.history_config(cfg)['accounts']]
             self.assertIn('archived', ids)
             self.assertTrue([i for i in ids if i.startswith('home-')])
+
+    def test_named_symlinked_conversations_folder_owns_the_antigravity_home(self):
+        with patch.object(c, 'STATE', self.root / 'state'), patch.object(c, 'HOME', self.root), \
+             patch.dict('os.environ', self.sandbox_env()):
+            home = self.root / 'mounted/antigravity-cli'
+            (home / 'actual-conversations').mkdir(parents=True)
+            (home / 'conversations').symlink_to(home / 'actual-conversations')
+            named = {'id': 'named', 'label': 'Named', 'directories': [{'provider': 'antigravity', 'path': str(home / 'conversations')}]}
+            cfg = c.DEFAULTS | {'enabled': ['antigravity'], 'accounts': [named], 'antigravityHomes': [str(home)]}
+            self.assertEqual([a['id'] for a in c.history_config(cfg)['accounts']], ['named'])
 
     def test_antigravity_single_account_record_is_unchanged(self):
         with patch.object(c, 'STATE', self.root / 'state'), patch.object(c, 'HOME', self.root), \

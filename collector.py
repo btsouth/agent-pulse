@@ -262,7 +262,7 @@ def history_config(cfg):
                for a in accounts for d in a['directories']): return
         # An Antigravity login's history is its conversations folder: a named
         # account holding that folder owns the login.
-        if provider == 'antigravity' and any(d['provider'] == provider and (root / 'conversations').is_relative_to(Path(d['path']).expanduser().resolve())
+        if provider == 'antigravity' and any(d['provider'] == provider and (root / 'conversations').resolve().is_relative_to(Path(d['path']).expanduser().resolve())
                                              for a in accounts for d in a['directories']): return
         accounts.append({'id': aid, 'label': label, 'directories': [{'provider': provider, 'path': str(root)}],
                          'discovered': True})
@@ -2534,6 +2534,8 @@ def account_views(ledger, cfg, labels, assignments, now):
         else:
             a = named.get(aid, {})
             record_id = p + ':' + aid if p + ':' + aid in by_id else a.get('recordId') or aid
+            # A record bound to another account is not this one's, even under its id.
+            if (by_id.get(record_id) or {}).get('account') not in (None, aid): record_id = p + ':' + aid
             # Provider-qualified records take precedence; special histories
             # and names that collide with default provider ids never borrow a login.
             q = None if aid in PROVIDERS or aid in ('unassigned', 'conflict') or aid.startswith('machine:') else (
