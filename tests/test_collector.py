@@ -58,7 +58,9 @@ class CollectorTests(unittest.TestCase):
                 'XDG_STATE_HOME': str(root / 'state'), 'XDG_CONFIG_HOME': str(root / 'config'),
                 'CODEX_HOME': str(root / 'codex'), 'CLAUDE_CONFIG_DIR': str(root / 'claude'),
                 'GROK_HOME': str(root / 'grok'), 'PI_CODING_AGENT_DIR': str(root / 'pi'),
-                'MUSE_HOME': str(root / 'muse'), 'CURSOR_HOME': str(root / 'cursor')}
+                'MUSE_HOME': str(root / 'muse'), 'CURSOR_HOME': str(root / 'cursor'),
+                # A real agy install and the session's runtime directory stay out.
+                'MISE_DATA_DIR': str(root / 'mise'), 'XDG_RUNTIME_DIR': str(root / 'run')}
 
     def transcript(self, name, entries):
         path = self.root / name
@@ -1221,9 +1223,7 @@ class CollectorTests(unittest.TestCase):
             view = next(v for v in c.report(ledger, cfg, days=1)['accountViews'] if v['name'] == 'Antigravity-Becca')
             scoped = c.report(ledger, cfg, days=1, provider='antigravity',
                               selection={'account': view['accountId'], 'resetWindow': view['quota']['limits'][0]['windowId']})
-            offered = json.dumps(scoped.get('modelOptions', scoped.get('models', [])))
-            self.assertIn('gemini', offered)
-            self.assertNotIn('claude', offered)
+            self.assertEqual([option['id'] for option in scoped['modelOptions']], ['gemini-3.8-flash-high'])
             ledger.db.close()
 
     def test_antigravity_plan_lookup_is_daily_even_when_it_fails(self):
@@ -1331,6 +1331,31 @@ class CollectorTests(unittest.TestCase):
             named = {'id': 'named', 'label': 'Named', 'directories': [{'provider': 'antigravity', 'path': str(home / 'conversations')}]}
             cfg = c.DEFAULTS | {'enabled': ['antigravity'], 'accounts': [named], 'antigravityHomes': [str(home)]}
             self.assertEqual([a['id'] for a in c.history_config(cfg)['accounts']], ['named'])
+
+    def test_antigravity_record_ids_do_not_depend_on_other_instances(self):
+        self.t3_antigravity({'antigravity_work': {'driver': 'antigravity', 'displayName': 'A', 'enabled': False},
+                             'antigravity-work': {'driver': 'antigravity', 'displayName': 'B'},
+                             'antigravity_home': {'driver': 'antigravity', 'displayName': 'C'}},
+                            signed_in=('antigravity_work', 'antigravity-work', 'antigravity_home'))
+        with patch.object(c, 'HOME', self.root):
+            enabled = {p['id']: p['record'] for p in c.antigravity_profiles()}
+            every = {p['id']: p['record'] for p in c.antigravity_profiles(include_disabled=True)}
+        self.assertEqual(enabled['antigravity-work'], every['antigravity-work'])
+        self.assertNotEqual(every['antigravity-work'], every['antigravity_work'])
+        self.assertEqual(every['antigravity_home'], 'antigravity-home')
+
+    def test_symlinked_profile_conversations_record_goes_to_the_named_owner(self):
+        with patch.object(c, 'STATE', self.root / 'state'), patch.object(c, 'HOME', self.root), \
+             patch.dict('os.environ', self.sandbox_env()):
+            import hashlib
+            root = self.root / '.t3/userdata/providers/antigravity' / hashlib.sha256(b'antigravity_one').hexdigest() / 'antigravity-acp'
+            actual = self.root / 'elsewhere/conversations'; actual.mkdir(parents=True)
+            root.mkdir(parents=True); (root / 'conversations').symlink_to(actual)
+            named = {'id': 'custom', 'label': 'Custom', 'directories': [{'provider': 'antigravity', 'path': str(actual)}]}
+            ledger, cfg, _ = self.antigravity_two_profiles(['Work', 'Other'], accounts=[named])
+            record = json.loads((self.root / 'agents/usage/antigravity-one.json').read_text())
+            self.assertEqual((record['account'], record['totalPrompts']), ('custom', 1))
+            ledger.db.close()
 
     def test_antigravity_single_account_record_is_unchanged(self):
         with patch.object(c, 'STATE', self.root / 'state'), patch.object(c, 'HOME', self.root), \

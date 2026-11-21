@@ -1999,15 +1999,17 @@ def antigravity_profiles(include_disabled=False):
     except (OSError, ValueError): return []
     instances = data.get('providerInstances') if isinstance(data, dict) else None
     if not isinstance(instances, dict): return []
-    found, records = [], set()
-    for instance_id, instance in instances.items():
-        if not isinstance(instance, dict) or (instance.get('enabled') is False and not include_disabled): continue
-        if provider_key(instance.get('driver')) != 'antigravity': continue
+    # Record ids come from the instance id alone. Ids that share a slug all
+    # carry a digest, so no instance's id depends on which others are on.
+    antigravity = {i: v for i, v in instances.items() if isinstance(v, dict) and provider_key(v.get('driver')) == 'antigravity'}
+    slugs = collections.Counter(antigravity_slug(i) for i in antigravity)
+    found = []
+    for instance_id, instance in antigravity.items():
+        if instance.get('enabled') is False and not include_disabled: continue
         root = HOME / ANTIGRAVITY_T3_ROOT / hashlib.sha256(str(instance_id).encode()).hexdigest() / 'antigravity-acp'
         if not (root / 'antigravity-oauth-token').is_file(): continue
-        record = 'antigravity-' + antigravity_slug(instance_id)
-        if record in records: record += '-' + digest(instance_id)[:6]
-        records.add(record)
+        slug = antigravity_slug(instance_id)
+        record = 'antigravity-' + slug + ('-' + digest(instance_id)[:6] if slugs[slug] > 1 else '')
         found.append({'id': str(instance_id), 'record': record, 'root': str(root),
                       'name': str(instance.get('displayName') or instance_id).strip() or record})
     return found
@@ -2534,8 +2536,9 @@ def account_views(ledger, cfg, labels, assignments, now):
         else:
             a = named.get(aid, {})
             record_id = p + ':' + aid if p + ':' + aid in by_id else a.get('recordId') or aid
-            # A record bound to another account is not this one's, even under its id.
-            if (by_id.get(record_id) or {}).get('account') not in (None, aid): record_id = p + ':' + aid
+            # A record bound to another account is not this one's, even under
+            # its id, so the view names no record rather than someone else's.
+            if (by_id.get(record_id) or {}).get('account') not in (None, aid): record_id = ''
             # Provider-qualified records take precedence; special histories
             # and names that collide with default provider ids never borrow a login.
             q = None if aid in PROVIDERS or aid in ('unassigned', 'conflict') or aid.startswith('machine:') else (
@@ -3127,7 +3130,7 @@ def write_antigravity_records(ledger, cfg, force=False):
     for profile in profiles:
         # The account holding the profile's folder: T3's own entry, or a named
         # account the user already put that folder in.
-        account = owners('antigravity', str(Path(profile['root']) / 'conversations/any.db'))
+        account = owners('antigravity', str((Path(profile['root']) / 'conversations').resolve() / 'any.db'))
         write_agent_record(ledger, 'antigravity', profile['record'], profile['name'], account, quotas[profile['record']], cfg)
     current = {profile['record'] for profile in profiles}
     for path in (STATE.parent / 'agents/usage').glob('antigravity-*.json'):

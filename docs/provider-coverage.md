@@ -88,7 +88,7 @@ Runtime provider requests use these destinations:
 - OpenCode Go: `opencode.ai/zen/go/v1/usage`.
 - Grok: `grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig`.
 - Muse: the API base configured by the local Muse login, defaulting to `api.meta.ai`, with `/muse-code/key`. Returned key material is discarded; only quota fields are cached.
-- Antigravity: the local `agy` CLI is run with `-p /usage`; it performs its own request to Google and the collector reads only its JSON output.
+- Antigravity: the local `agy` CLI is run with `-p /usage`; it performs its own request to Google and the collector reads only its JSON output. Once a day per sign-in the collector also asks `daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist` for the plan name, with the access token agy keeps.
 - CommandCode: `api.commandcode.ai/alpha/billing/credits`, `/alpha/billing/subscriptions`, and `/alpha/usage/summary`.
 - Cursor: `api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage` and `GetFilteredUsageEvents`.
 
