@@ -681,9 +681,14 @@ Panel {
   function iconCandidatesForProvider(p, surfaceColor) {
     if (!p) return []
     var candidates = []
-    if (colorLuminance(surfaceColor || Commons.Color.background) >= 0.5)
-      candidates.push(Qt.resolvedUrl("assets/" + p.providerId + "-light.svg"))
-    candidates.push(Qt.resolvedUrl("assets/" + p.providerId + ".svg"))
+    var light = colorLuminance(surfaceColor || Commons.Color.background) >= 0.5
+    // A further Antigravity account wears Antigravity's own mark.
+    var ids = [p.providerId]
+    if (/^antigravity-/.test(p.providerId)) ids.push("antigravity")
+    for (var i = 0; i < ids.length; i++) {
+      if (light) candidates.push(Qt.resolvedUrl("assets/" + ids[i] + "-light.svg"))
+      candidates.push(Qt.resolvedUrl("assets/" + ids[i] + ".svg"))
+    }
     return candidates
   }
 

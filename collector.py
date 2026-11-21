@@ -267,6 +267,10 @@ def history_config(cfg):
         # service account. Its private tool home is not a separate login.
         if instance['provider'] != instance['driver']: continue
         add_home(instance['provider'], instance['root'], 't3-' + digest(instance['id'])[:16], instance['label'])
+    # T3 keeps no home path for Antigravity. An instance with a sign-in of its
+    # own is another Google account; one on the keyring is the main login.
+    for profile in antigravity_profiles():
+        add_home('antigravity', profile['root'], 't3-' + digest(profile['id'])[:16], profile['name'])
     for key in HOME_KEYS:
         provider = key.removesuffix('Homes')
         routes = HERMES_ROUTES if provider == 'hermes' else ('opencode', 'opencode-go') if provider == 'opencode' else (provider,)
@@ -1745,7 +1749,7 @@ def quota(provider):
                                       'cursor': 'cursor-quota.json'}[provider]).read_text())
         except (OSError, ValueError): d = {}
         result = {'limits': d.get('limits', []), 'updatedAt': d.get('updatedAt'), 'error': d.get('error', '')}
-        if provider in ('muse', 'commandcode'): result['plan'] = d.get('plan', '')
+        if provider in ('muse', 'commandcode', 'antigravity'): result['plan'] = d.get('plan', '')
         # A prepaid wallet a provider reports alongside its windows rides
         # through to the card unchanged.
         if d.get('balance'): result['balance'] = d['balance']
@@ -1896,54 +1900,257 @@ def muse_quota(force=False):
     return cached
 
 
-def antigravity_quota(force=False):
-    """Antigravity's own usage report, read from its CLI.
+# Antigravity's quota groups: the label prefix earlier releases wrote (pins
+# match on it), the name shown, and the models whose tokens count toward the
+# group's windows. Model ids are the served ids the history parser records.
+ANTIGRAVITY_GROUPS = {'geminimodels': ('Gemini', 'Gemini', r'^gemini(?!.*argon)'),
+                      'claudeandgptmodels': ('Claude/GPT', 'Claude & GPT', r'^(claude|gpt)')}
+ANTIGRAVITY_T3_ROOT = Path('.t3/userdata/providers/antigravity')
+# Variables that would make agy sign in some other way than with the token it
+# is handed, the same set T3 Code clears before it starts an instance.
+ANTIGRAVITY_AUTH_ENV = ('GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_APPLICATION_CREDENTIALS', 'GOOGLE_CLOUD_PROJECT',
+                        'GOOGLE_CLOUD_LOCATION', 'GOOGLE_CLOUD_QUOTA_PROJECT', 'GOOGLE_GENAI_USE_VERTEXAI',
+                        'GCLOUD_PROJECT', 'CLOUDSDK_CORE_PROJECT', 'AGY_ADC_AUTH', 'GEMINI_HOME',
+                        'AGY_ACP_FORCE_FILE_STORAGE', 'ANTIGRAVITY_HARNESS_PATH')
+CLOUD_CODE_URL = 'https://daily-cloudcode-pa.googleapis.com'
 
-    `agy -p /usage` is a zero-turn command: it prints the current Gemini and
-    Claude/GPT windows as JSON and costs no quota, so it is asked on the scan
-    cadence like the other command-backed sources. Only display-safe fields
-    enter the cache.
+
+def antigravity_limits(parsed):
+    """The windows in one `agy -p /usage` report, as used-percent meters.
+
+    Antigravity splits its quota into groups that each hold a 5-hour and a
+    weekly window, plus groups for single models (Gemini 4 Argon has only a
+    weekly one). The two original groups keep the labels earlier releases
+    wrote, so pins made against them still find their window; any other group
+    is named as Antigravity names it. Every window is titled after its group,
+    because "Weekly" alone is ambiguous among five meters, and carries the
+    pattern of the models it covers, so the tokens counted in a window are its
+    own group's rather than everything Antigravity recorded. A group whose
+    models are unknown gets no pattern and so no count.
     """
-    path = STATE / 'antigravity-quota.json'
+    groups = ((parsed.get('command') or {}).get('data') or {}).get('groups') if isinstance(parsed, dict) else None
+    if not isinstance(groups, list): raise ValueError('Antigravity returned no recognized quota windows.')
+    windows, labels = [], set()
+    for group in groups:
+        if not isinstance(group, dict): continue
+        name = str(group.get('name') or '').strip()
+        prefix, shown, pattern = ANTIGRAVITY_GROUPS.get(provider_key(name), (None, None, None))
+        if not prefix:
+            prefix = shown = re.sub(r'\s+models$', '', name, flags=re.I) or 'Antigravity'
+            pattern = r'argon' if 'argon' in name.casefold() else None
+        description = str(group.get('description') or '').strip()
+        members = re.sub(r'^Models within this group:\s*', '', description, flags=re.I) if description.lower().startswith('models within this group') else ''
+        found = []
+        for bucket in group.get('buckets') if isinstance(group.get('buckets'), list) else []:
+            if not isinstance(bucket, dict): continue
+            remaining = bucket.get('remaining_fraction')
+            if isinstance(remaining, bool) or not isinstance(remaining, (int, float)) or not 0 <= remaining <= 1: continue
+            window = str(bucket.get('window') or '').strip().lower()
+            kind, title = ('5-hour', '5-hour') if window == '5h' else ('weekly', 'Weekly') if window == 'weekly' else (window, window.capitalize())
+            label = (prefix + ' ' + kind).strip()
+            if label in labels: label += ' (' + str(bucket.get('id') or len(windows)) + ')'
+            labels.add(label)
+            # The endpoint reports remaining; every other meter stores used.
+            entry = {'label': label, 'title': shown + ' · ' + title if title else shown, 'percent': 1 - remaining}
+            reset = bucket.get('reset_time')
+            if reset: entry['resetsAt'] = str(reset)
+            if pattern: entry['modelPattern'] = pattern
+            if members: entry['detail'] = members
+            found.append((0 if window == '5h' else 1, len(found), entry))
+        windows += [entry for *_, entry in sorted(found, key=lambda item: item[:2])]
+    if not windows: raise ValueError('Antigravity returned no recognized quota windows.')
+    return windows
+
+
+def antigravity_slug(instance_id):
+    words = [w for w in re.split(r'[^a-z0-9]+', str(instance_id).casefold()) if w]
+    while words and words[0] == 'antigravity': words.pop(0)
+    return '-'.join(words)[:60] or digest(instance_id)[:12]
+
+
+def antigravity_profiles():
+    """T3 Code Antigravity instances that keep a sign-in of their own.
+
+    T3 runs each Antigravity instance with its profile at
+    providers/antigravity/<sha256 of the instance id>, and an instance set up
+    with file storage keeps its Google sign-in there as
+    antigravity-acp/antigravity-oauth-token. That file is what makes the
+    instance a second account. An instance without one signs in through the
+    keyring, which is the CLI's own login, so its history stays with the main
+    account. Only whether the file exists is read here; nothing in it is.
+    """
+    try: data = json.loads((HOME / '.t3/userdata/settings.json').read_text())
+    except (OSError, ValueError): return []
+    instances = data.get('providerInstances') if isinstance(data, dict) else None
+    if not isinstance(instances, dict): return []
+    found, records = [], set()
+    for instance_id, instance in instances.items():
+        if not isinstance(instance, dict) or instance.get('enabled') is False: continue
+        if provider_key(instance.get('driver')) != 'antigravity': continue
+        root = HOME / ANTIGRAVITY_T3_ROOT / hashlib.sha256(str(instance_id).encode()).hexdigest() / 'antigravity-acp'
+        if not (root / 'antigravity-oauth-token').is_file(): continue
+        record = 'antigravity-' + antigravity_slug(instance_id)
+        if record in records: record += '-' + digest(instance_id)[:6]
+        records.add(record)
+        found.append({'id': str(instance_id), 'record': record, 'root': str(root),
+                      'name': str(instance.get('displayName') or instance_id).strip() or record})
+    return found
+
+
+def antigravity_binary():
+    # A mise install is run directly: the `agy` shim mise users put on PATH
+    # re-resolves the tool first, which can reach the network and stall past
+    # the timeout before the report is asked for.
+    installed = Path(os.getenv('MISE_DATA_DIR') or HOME / '.local/share/mise') / 'installs/antigravity-cli/latest/agy'
+    return str(installed) if installed.exists() else shutil.which('agy')
+
+
+def run_agy(binary, home=None, timeout=60):
+    """`agy -p /usage`, signed in as the main login or, with home, as the
+    token placed in that private home. agy starts helper processes, so it runs
+    in its own session and the whole group is stopped when it overruns; a
+    lapsed sign-in otherwise waits a minute for a browser login. It never
+    updates itself from here: that is the user's own agy run's business."""
+    env = dict(os.environ, AGY_CLI_DISABLE_AUTO_UPDATE='true')
+    if home:
+        for key in ANTIGRAVITY_AUTH_ENV: env.pop(key, None)
+        env.update(HOME=str(home), XDG_CONFIG_HOME=str(home / '.config'), XDG_DATA_HOME=str(home / '.local/share'),
+                   XDG_CACHE_HOME=str(home / '.cache'), XDG_STATE_HOME=str(home / '.local/state'),
+                   # No keyring: the token file in this home is the only sign-in.
+                   DBUS_SESSION_BUS_ADDRESS='unix:path=/nonexistent', BROWSER='/bin/false')
+    process = subprocess.Popen([binary, '-p', '/usage', '--output-format', 'json'], stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+                               cwd=str(home) if home else None, start_new_session=True)
+    try: out, err = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(OSError): os.killpg(process.pid, 9)
+        process.communicate()
+        raise
+    return process.returncode, out, err
+
+
+def antigravity_run_dir():
+    """Where a second account's private home lives while agy runs: the
+    user's runtime directory (memory only) when there is one."""
+    runtime = os.getenv('XDG_RUNTIME_DIR')
+    base = Path(runtime) if runtime and Path(runtime).is_dir() else STATE
+    return base / 'agent-pulse-antigravity'
+
+
+def antigravity_plan(token):
+    """The plan a sign-in is on ("Google AI Pro"), from the same Cloud Code
+    call agy makes at start-up. A paid tier names the plan; without one the
+    account is on Antigravity's free tier."""
+    if not token: return ''
+    request = urllib.request.Request(CLOUD_CODE_URL + '/v1internal:loadCodeAssist', data=b'{}', method='POST',
+                                     headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
+                                              'User-Agent': 'antigravity'})
+    with urllib.request.urlopen(request, timeout=10) as response: data = json.loads(response.read())
+    paid = data.get('paidTier') if isinstance(data, dict) else None
+    if isinstance(paid, dict) and str(paid.get('name') or '').strip(): return str(paid['name']).strip()
+    current = data.get('currentTier') if isinstance(data, dict) else None
+    if isinstance(current, dict) and 'free' in str(current.get('id') or '').casefold(): return 'Free'
+    return str((current or {}).get('name') or '').strip() if isinstance(current, dict) else ''
+
+
+def token_access(path):
+    """A still-valid access token from a sign-in file agy wrote, or ''."""
+    try: data = json.loads(Path(path).read_text())
+    except (OSError, ValueError): return ''
+    return fresh_access(data)
+
+
+def fresh_access(data):
+    token = data.get('token') if isinstance(data, dict) and isinstance(data.get('token'), dict) else data
+    if not isinstance(token, dict) or not token.get('access_token'): return ''
+    try:
+        expiry = dt.datetime.fromisoformat(re.sub(r'(\.\d{6})\d+', r'\1', str(token.get('expiry') or '')).replace('Z', '+00:00'))
+        if expiry.timestamp() < time.time() + 60: return ''
+    except ValueError: pass
+    return str(token['access_token'])
+
+
+def main_antigravity_access():
+    """The main login's access token, read the way agy keeps it: in the
+    Secret Service keyring, or in its own file where there is no keyring."""
+    try:
+        raw = subprocess.run(['secret-tool', 'lookup', 'service', 'gemini', 'username', 'antigravity'],
+                             capture_output=True, text=True, timeout=3, stdin=subprocess.DEVNULL).stdout
+        found = fresh_access(json.loads(raw)) if raw.strip() else ''
+    except (OSError, ValueError, subprocess.SubprocessError): found = ''
+    return found or token_access(HOME / '.gemini/antigravity-cli/antigravity-oauth-token')
+
+
+def antigravity_quota(force=False, profile=None):
+    """Antigravity's own usage report for one sign-in, read from its CLI.
+
+    `agy -p /usage` is a zero-turn command: it prints every quota group's
+    windows as JSON and costs no quota, so it is asked on the scan cadence
+    like the other command-backed sources. The main login is asked as is. A
+    second account (a T3 Code instance with its own sign-in) is asked from a
+    private home that holds a copy of its token file for the length of the
+    call: agy reads its sign-in only from HOME in this mode, and the copy is
+    what it may refresh. T3's own file is never written. The plan is looked up
+    once a day with the access token agy keeps fresh. Only display-safe
+    fields enter the cache.
+    """
+    path = STATE / ('antigravity-quota.json' if not profile else 'antigravity-quota-' + profile['record'].removeprefix('antigravity-') + '.json')
     try: cached = json.loads(path.read_text())
     except (OSError, ValueError): cached = {}
+    if not isinstance(cached, dict): cached = {}
     if not force and time.time() - cached.get('attemptedAt', 0) < 300: return cached
+    home, access = None, ''
     try:
-        # A mise install is run directly: the `agy` shim mise users put on PATH
-        # re-resolves the tool first, which can reach the network and stall
-        # past the timeout before the report is asked for.
-        installed = Path(os.getenv('MISE_DATA_DIR') or HOME / '.local/share/mise') / 'installs/antigravity-cli/latest/agy'
-        binary = str(installed) if installed.exists() else shutil.which('agy')
+        binary = antigravity_binary()
         if not binary: raise QuotaUnavailable('Install the Antigravity CLI to read quota.')
-        result = subprocess.run([binary, '-p', '/usage', '--output-format', 'json'],
-                                capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
-        if result.returncode != 0: raise ValueError('Antigravity usage command failed.')
-        parsed = json.loads(result.stdout)
-        groups = ((parsed.get('command') or {}).get('data') or {}).get('groups')
-        if not isinstance(groups, list): raise ValueError('Antigravity returned no recognized quota windows.')
-        windows = []
-        for group in groups:
-            if not isinstance(group, dict): continue
-            name = str(group.get('name') or '')
-            prefix = 'Gemini' if 'gemini' in name.casefold() else 'Claude/GPT' if 'claude' in name.casefold() else name
-            for bucket in group.get('buckets') if isinstance(group.get('buckets'), list) else []:
-                if not isinstance(bucket, dict): continue
-                remaining = bucket.get('remaining_fraction')
-                if not isinstance(remaining, (int, float)) or not 0 <= remaining <= 1: continue
-                # The endpoint reports remaining; every other meter stores used.
-                window = str(bucket.get('window') or '')
-                kind = '5-hour' if window == '5h' else 'weekly' if window == 'weekly' else window
-                entry = {'label': (prefix + ' ' + kind).strip(), 'percent': 1 - remaining}
-                reset = bucket.get('reset_time')
-                if reset: entry['resetsAt'] = str(reset)
-                windows.append(entry)
-        if not windows: raise ValueError('Antigravity returned no recognized quota windows.')
-        cached = {'limits': windows, 'updatedAt': dt.datetime.now(dt.timezone.utc).isoformat(), 'error': ''}
+        if profile:
+            token = Path(profile['root']) / 'antigravity-oauth-token'
+            if not token.is_file(): raise QuotaUnavailable('Sign in to ' + profile['name'] + ' in T3 Code.')
+            base = antigravity_run_dir()
+            base.mkdir(parents=True, exist_ok=True); os.chmod(base, 0o700)
+            home = Path(tempfile.mkdtemp(dir=base))
+            target = home / '.gemini/antigravity-cli/antigravity-oauth-token'
+            target.parent.mkdir(parents=True)
+            descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, 'wb') as copy: copy.write(token.read_bytes())
+        try: code, out, err = run_agy(binary, home, timeout=30 if profile else 60)
+        except subprocess.TimeoutExpired:
+            raise QuotaUnavailable('Sign in to ' + profile['name'] + ' again in T3 Code.' if profile else 'Antigravity quota timed out. Run agy to check your login.')
+        if 'authentication required' in (out + err).casefold():
+            raise QuotaUnavailable('Sign in to ' + profile['name'] + ' again in T3 Code.' if profile else 'Run agy to sign in to Antigravity again.')
+        if code != 0: raise ValueError('Antigravity usage command failed.')
+        windows = antigravity_limits(json.loads(out))
+        plan, checked = cached.get('plan', ''), cached.get('planCheckedAt', 0)
+        if time.time() - checked >= 86400 or not plan:
+            try:
+                access = token_access(home / '.gemini/antigravity-cli/antigravity-oauth-token') if home else main_antigravity_access()
+                plan = antigravity_plan(access) or plan
+            except Exception: pass
+            checked = time.time()
+        cached = {'limits': windows, 'updatedAt': dt.datetime.now(dt.timezone.utc).isoformat(), 'error': '',
+                  'plan': plan, 'planCheckedAt': checked}
     except Exception as exc:
         cached['error'] = str(exc) if isinstance(exc, QuotaUnavailable) else 'Antigravity quota unavailable. Run agy to check your login.'
+    finally:
+        access = ''
+        if home: shutil.rmtree(home, ignore_errors=True)
+    if profile: cached['name'] = profile['name']
     cached['attemptedAt'] = time.time()
     atomic_json(path, cached)
     return cached
+
+
+def antigravity_quotas(force=False):
+    """Every Antigravity sign-in's quota: the main login and each T3 Code
+    instance with its own. A home left behind by an interrupted run is
+    removed first; scans hold the collector lock, so none is in use."""
+    base = antigravity_run_dir()
+    if base.is_dir():
+        for leftover in base.iterdir(): shutil.rmtree(leftover, ignore_errors=True)
+    profiles = antigravity_profiles()
+    results = {'antigravity': antigravity_quota(force)}
+    for profile in profiles: results[profile['record']] = antigravity_quota(force, profile)
+    return profiles, results
 
 
 def config_dir():
@@ -2205,11 +2412,21 @@ def window_start(label, reset):
 
 
 def limit_reset(limit):
-    """When a countable account window resets; model-only limits need their own scope."""
-    if not isinstance(limit, dict) or limit.get('title') or not limit.get('resetsAt'): return None
+    """When a countable account window resets. A titled limit is scoped to
+    some models, so it counts only when it says which (modelPattern)."""
+    if not isinstance(limit, dict) or not limit.get('resetsAt'): return None
+    if limit.get('title') and not model_pattern(limit): return None
     try: reset = dt.datetime.fromisoformat(re.sub(r'(\.\d{6})\d+', r'\1', str(limit['resetsAt'])).replace('Z', '+00:00'))
     except ValueError: return None
     return reset if reset.tzinfo else reset.replace(tzinfo=dt.timezone.utc)
+
+
+def model_pattern(limit):
+    """The compiled model-id pattern a limit is scoped to, or None."""
+    pattern = limit.get('modelPattern') if isinstance(limit, dict) else None
+    if not isinstance(pattern, str) or not pattern: return None
+    try: return re.compile(pattern)
+    except re.error: return None
 
 
 def current_window(limit, now):
@@ -2307,7 +2524,10 @@ def account_views(ledger, cfg, labels, assignments, now):
             if q is not None and q.get('provider') not in (None, p): q = None
             scope = 'From its own usage record' if q is not None else ''
             q = q or {'limits': [], 'error': 'No quota record linked to this account; current login quota belongs to its own account.'}
-            name = label if p == 'codex' and label.casefold().startswith('chatgpt') else PROVIDERS[p] + ' · ' + label
+            # A label that already names its provider ("Antigravity-Becca",
+            # "ChatGPT Second") is not prefixed with it again.
+            plain = label.casefold().startswith('chatgpt' if p == 'codex' else PROVIDERS[p].casefold())
+            name = label if plain else PROVIDERS[p] + ' · ' + label
         views.append({'id': p + ':' + aid, 'provider': p, 'accountId': aid, 'name': name,
                       'recordId': record_id, 'quota': q, 'quotaScope': scope,
                       'historyAvailable': named.get(aid, {}).get('historyAvailable', True)})
@@ -2346,24 +2566,29 @@ def limit_window_tokens(ledger, cfg, targets, now=None):
             since = max(int(start.timestamp()), cleared.get((records[key], index), 0))
             found.setdefault(key, {})[index] = [since, 0]
             for provider in providers:
-                windows.setdefault((provider, account), []).append((since, found[key][index]))
+                windows.setdefault((provider, account), []).append((since, found[key][index], model_pattern(limit)))
     if not windows: return {}
+    # Model-scoped windows (Antigravity's quota groups) need the model in the
+    # grouping; the others keep the cheaper per-path sums.
+    by_model = any(pattern for entries in windows.values() for *_, pattern in entries)
     # Summed in SQL by each event's set of source paths, so accounts are
     # resolved once per set rather than once per event: the panel's pulse
     # runs this every 15 seconds. An event copied under several sources is
     # placed the way account_assignments places it.
-    starts = sorted({since for entries in windows.values() for since, _ in entries})
+    starts = sorted({since for entries in windows.values() for since, *_ in entries})
     names = sorted({provider for provider, _ in windows})
     sums = ','.join('SUM(CASE WHEN ts>=? THEN tokens ELSE 0 END)' for _ in starts)
+    model = 'model' if by_model else "''"
     resolve = source_account(cfg)
-    for provider, paths, *values in ledger.db.execute(
-            f'SELECT provider,paths,{sums} FROM (SELECT e.provider,e.ts,'
+    for provider, paths, served, *values in ledger.db.execute(
+            f'SELECT provider,paths,{model},{sums} FROM (SELECT e.provider,e.ts,e.model,'
             f'e.input+e.output+e.cacheRead+e.cacheWrite AS tokens,group_concat(s.path,char(31)) AS paths '
             f'FROM events e JOIN event_sources s ON s.event_id=e.id WHERE e.ts>=? AND e.ts<=? '
-            f'AND e.provider IN ({",".join("?" for _ in names)}) GROUP BY e.id) GROUP BY provider,paths',
+            f'AND e.provider IN ({",".join("?" for _ in names)}) GROUP BY e.id) GROUP BY provider,paths,{model}',
             (*starts, starts[0], now.timestamp(), *names)):
         account = event_account(resolve(provider, path) for path in paths.split('\x1f'))
-        for since, total in windows.get((provider, account), ()):
+        for since, total, pattern in windows.get((provider, account), ()):
+            if pattern and not pattern.search(str(served or '').casefold()): continue
             total[1] += values[starts.index(since)] or 0
     return {key: {index: tuple(value) for index, value in entries.items()} for key, entries in found.items()}
 
@@ -2538,6 +2763,8 @@ def report(ledger, cfg, days=7, provider='all', now=None, selection=None):
         reset_limit = next((w for w in view['quota']['limits'] if w.get('windowId') == selection['resetWindow']), None) if view else None
         if reset_limit is None:
             period_error = 'This reset window is unavailable. Choose an account and a current reset window, or select a date range.'
+    # A window scoped to a quota group shows only that group's models.
+    reset_scope = model_pattern(reset_limit) if reset_limit else None
     start_date = today.date() - dt.timedelta(days=days - 1)
     if reset_limit:
         start_date = dt.datetime.fromtimestamp(reset_limit['startAt']).date()
@@ -2613,6 +2840,7 @@ def report(ledger, cfg, days=7, provider='all', now=None, selection=None):
             family_name = model_family(r['model'])
             model_options[family_name] = model_options.get(family_name, 0) + sum(r[f] for f in FIELDS[:4])
         if not selected(r, selection, p): continue
+        if reset_scope and not reset_scope.search(str(r['model'] or '').casefold()): continue
         if selected_hour is None and previous_start <= r['ts'] < previous_end and (not previous_date or day == str(previous_date)):
             value, savings, tier = price_detail(r, rates['document'])
             add(previous, r, value, savings, tier)
@@ -2814,32 +3042,73 @@ def report(ledger, cfg, days=7, provider='all', now=None, selection=None):
             'settings': masked_settings(saved_cfg), 'theme': theme(), 'update': update_status(saved_cfg)}
 
 
-def write_agent_record(ledger, provider):
-    cfg = DEFAULTS | {'enabled': [provider]}
-    data = report(ledger, cfg, days=7)
-    summary = data['summary']; q = quota(provider)
-    total_records, total_sessions = ledger.db.execute(
-        'SELECT COUNT(*),COUNT(DISTINCT session) FROM events WHERE provider=?', (provider,)).fetchone()
-    active_dates = [r[0] for r in ledger.db.execute(
-        "SELECT DISTINCT date(ts,'unixepoch','localtime') FROM events WHERE provider=? ORDER BY 1", (provider,))]
+def write_agent_record(ledger, provider, record_id=None, name=None, account=None, q=None, cfg=None):
+    """The usage record the bar panel reads for one login.
+
+    By default the record is the provider's own and covers all its history.
+    A login that owns only part of the provider's history (a second
+    Antigravity account, or the main login beside one) names its ledger
+    account, and its totals count only events placed in that account.
+    """
+    record_id = record_id or provider
+    scoped = account is not None
+    base = history_config(cfg) if scoped else DEFAULTS
+    data = report(ledger, base | {'enabled': [provider]}, days=7, provider=provider,
+                  selection={'account': account} if scoped else None)
+    q = quota(provider) if q is None else q
+    if scoped:
+        _, assignments = account_assignments(ledger, base)
+        rows = [r for r in ledger.db.execute('SELECT id,session,ts,model,input,output,cacheRead,cacheWrite FROM events WHERE provider=?', (provider,))
+                if assignments.get(r[0], 'unassigned') == account]
+    else:
+        rows = list(ledger.db.execute('SELECT id,session,ts,model,input,output,cacheRead,cacheWrite FROM events WHERE provider=?', (provider,)))
+    active_dates = sorted({str(dt.datetime.fromtimestamp(r[2]).date()) for r in rows})
     today = str(dt.date.today())
     today_data = next((x['providers'][provider] for x in data['daily'] if x['date'] == today), finish(bucket()))
-    record_data = {'schemaVersion': 1, 'id': provider, 'name': PROVIDERS[provider],
-       'updatedAt': q.get('updatedAt'), 'ready': bool(q.get('limits') or total_records), 'hasLocalStats': True,
-       'hasPromptStats': False, 'tierLabel': 'Go' if provider == 'opencode-go' else q.get('plan', '') if provider in ('muse', 'commandcode') else '', 'limits': q.get('limits', []), 'usageStatusText': q.get('error', ''),
+    tier = 'Go' if provider == 'opencode-go' else q.get('plan', '') if provider in ('muse', 'commandcode', 'antigravity') else ''
+    record_data = {'schemaVersion': 1, 'id': record_id, 'name': name or PROVIDERS[provider],
+       'updatedAt': q.get('updatedAt'), 'ready': bool(q.get('limits') or rows), 'hasLocalStats': True,
+       'hasPromptStats': False, 'tierLabel': tier, 'limits': q.get('limits', []), 'usageStatusText': q.get('error', ''),
        'todayTotalTokens': today_data['tokens'], 'todayPrompts': today_data['requests'], 'todaySessions': today_data['sessions'],
-       'totalPrompts': total_records, 'totalSessions': total_sessions,
+       'totalPrompts': len(rows), 'totalSessions': len({r[1] for r in rows}),
        'activeDays': len(active_dates), 'activeDates': active_dates,
        'recentDays': [{'date': x['date'], 'messageCount': x['providers'][provider]['tokens']} for x in data['daily']],
        'modelUsage': {}}
+    if record_id != provider:
+        # Ties the record to its provider for the panel and the dashboard, and
+        # marks it as ours so it is removed when the login goes away.
+        record_data |= {'provider': provider, 'writer': 'agent-pulse'}
     # A prepaid balance is part of the account's state the card shows, so it
     # travels with the record the panel reads. Providers without one leave the
     # key out rather than carrying a null.
     if q.get('balance'): record_data['balance'] = q['balance']
     # Existing popup labels model totals as all-time. Supply the full ledger.
-    for model, inp, out, read, write in ledger.db.execute('SELECT model,SUM(input),SUM(output),SUM(cacheRead),SUM(cacheWrite) FROM events WHERE provider=? GROUP BY model', (provider,)):
-        record_data['modelUsage'][model] = {'inputTokens': inp, 'outputTokens': out, 'cacheReadInputTokens': read, 'cacheCreationInputTokens': write}
-    atomic_json(STATE.parent / ('agents/usage/' + provider + '.json'), record_data)
+    for _, _, _, model, inp, out, read, write in rows:
+        entry = record_data['modelUsage'].setdefault(model, {'inputTokens': 0, 'outputTokens': 0, 'cacheReadInputTokens': 0, 'cacheCreationInputTokens': 0})
+        entry['inputTokens'] += inp; entry['outputTokens'] += out
+        entry['cacheReadInputTokens'] += read; entry['cacheCreationInputTokens'] += write
+    atomic_json(STATE.parent / ('agents/usage/' + record_id + '.json'), record_data)
+
+
+def write_antigravity_records(ledger, cfg, force=False):
+    """Quota and usage records for every Antigravity sign-in. With a second
+    account the main record counts only the main account's history, and a
+    record this collector wrote for a sign-in that is gone is removed."""
+    profiles, quotas = antigravity_quotas(force)
+    write_agent_record(ledger, 'antigravity', account='local' if profiles else None, q=quota('antigravity'), cfg=cfg)
+    for profile in profiles:
+        write_agent_record(ledger, 'antigravity', profile['record'], profile['name'],
+                           't3-' + digest(profile['id'])[:16], quotas[profile['record']], cfg)
+    current = {profile['record'] for profile in profiles}
+    for path in (STATE.parent / 'agents/usage').glob('antigravity-*.json'):
+        if path.stem in current: continue
+        try: record = json.loads(path.read_text())
+        except (OSError, ValueError): continue
+        if isinstance(record, dict) and record.get('writer') == 'agent-pulse':
+            with contextlib.suppress(OSError): path.unlink()
+    for path in STATE.glob('antigravity-quota-*.json'):
+        if 'antigravity-' + path.stem.removeprefix('antigravity-quota-') not in current:
+            with contextlib.suppress(OSError): path.unlink()
 
 
 def main():
@@ -2936,8 +3205,7 @@ def main():
                 commandcode_quota(args.force)
                 write_agent_record(ledger, 'commandcode')
             if args.action == 'scan' and 'antigravity' in cfg['enabled']:
-                antigravity_quota(args.force)
-                write_agent_record(ledger, 'antigravity')
+                write_antigravity_records(ledger, cfg, args.force)
 
             if args.action == 'scan' and 'cursor' in cfg['enabled']:
                 cursor_quota(args.force)

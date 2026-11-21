@@ -16,7 +16,7 @@ Requires Omarchy 4 with Quickshell, Python 3.11+, and a systemd user session. Ol
 curl -fsSL https://raw.githubusercontent.com/btsouth/agent-pulse/main/install.sh | bash -s -- --with-plugin
 ```
 
-Drop `--with-plugin` for the dashboard without the bar widget. To pin a release, pass the ref to Bash after the pipe: `curl -fsSL https://raw.githubusercontent.com/btsouth/agent-pulse/main/install.sh | OMARCHY_USAGE_REF=v1.12.2 bash -s -- --with-plugin`. Installing from a checkout also works:
+Drop `--with-plugin` for the dashboard without the bar widget. To pin a release, pass the ref to Bash after the pipe: `curl -fsSL https://raw.githubusercontent.com/btsouth/agent-pulse/main/install.sh | OMARCHY_USAGE_REF=v1.13.0 bash -s -- --with-plugin`. Installing from a checkout also works:
 
 ```sh
 git clone https://github.com/btsouth/agent-pulse.git
@@ -114,14 +114,14 @@ Claude's banked resets are added to each Claude card the same way, using the sig
 | OpenCode | Other model providers used through OpenCode | Not collected |
 | Pi / Oh My Pi | Saved assistant usage | Not collected |
 | Muse | Completed model responses, including subagents | From the existing Muse login |
-| Antigravity | CLI and T3 Code conversations | From the local Antigravity CLI |
+| Antigravity | CLI and T3 Code conversations | Every quota group, for each signed-in account, from the local Antigravity CLI |
 | CommandCode | T3 Code, Hermes agent sessions, and Command Code CLI transcripts | From a CommandCode API key: plan windows and the extra-credit balance |
 | Cursor | Cloud usage events (tokens and list-price cost per model) | Billing-cycle usage from your Cursor sign-in |
 | Hermes (OpenCode Go, CommandCode) | Agent sessions, including background work | Not collected; adds to the cards for those routes |
 
 Sources with recorded history appear automatically on a fresh install. Use **Settings** to choose which ones to show. OpenCode Go uses the API key saved in OpenCode (the 2.x credential store, or `auth.json` from 1.x); no cookie setup is needed. If Grok authentication expires, run `grok login`. CommandCode may need a key: type it in **Settings**, export `COMMANDCODE_API_KEY`, or put it in `~/.config/omarchy/ai-usage/commandcode.key`.
 
-T3 Code's custom provider instances are discovered from `~/.t3/userdata/settings.json`. Their isolated Codex, Claude, OpenCode, and Antigravity histories are read in place, and a CommandCode runtime is attributed to the CommandCode card rather than to Codex. Antigravity has no home path in that file, so its T3 conversation folders are found by globbing the T3 data directory.
+T3 Code's custom provider instances are discovered from `~/.t3/userdata/settings.json`. Their isolated Codex, Claude, OpenCode, and Antigravity histories are read in place, and a CommandCode runtime is attributed to the CommandCode card rather than to Codex. Antigravity has no home path in that file, so its T3 conversation folders are found by globbing the T3 data directory. A T3 Antigravity instance signed in to a Google account of its own becomes its own account, with its own limits, plan, and history.
 
 Hermes records its own per-route totals, and OpenCode Go reaches the same account through two apps now. Both are counted: OpenCode's transcripts carry the per-request detail from the OpenCode client, and Hermes sessions are added from its own ledger. The two share no session or message ids, so nothing is double counted, and the added total reconciles to the agent's own ledger exactly. Hermes rows can additionally be split by what they were for (typed prompts versus title generation, compression, vision, approvals, and background review) in the client breakdown.
 

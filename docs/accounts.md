@@ -11,7 +11,7 @@ Open Settings, name the default local history group if needed, then choose **Add
 | OpenCode / OpenCode Go | Data folder containing `opencode.db` or `storage/message` |
 | Pi / Oh My Pi | Agent folder containing `sessions` |
 | Muse | Data home containing `sessions` |
-| Antigravity | Agent home containing `conversations` (for example `~/.gemini/antigravity-cli`) |
+| Antigravity | Agent home containing `conversations` (for example `~/.gemini/antigravity-cli`). A T3 Code instance signed in to another Google account is added on its own. |
 | Hermes | Hermes home containing `state.db` (add one entry per route: OpenCode Go and CommandCode) |
 | Cursor | Cloud usage only; sign in to the Cursor desktop app (no folders to add) |
 
@@ -39,7 +39,7 @@ Snapshots carry token counters, model and project names, session ids, and timest
 
 ## Limits and comparisons
 
-History labels are not verified login identities. The main account keeps its current-login quota when selected. A named account shows limits when an agent usage record under `~/.local/state/omarchy/agents/usage/` has the same record id as the account, a provider-qualified id such as `codex:work`, or an unambiguous name matching the account label. The account detail states when quota or token history is unavailable. A separate agent record without a linked folder shows its limits and asks you to link history in Settings, rather than showing another login's tokens. Accounts without their own quota record never inherit the main login's limits. This version does not switch authentication or fetch every account's limits. When a recent shared Claude reading exists in `~/.cache/claude-usage/`, for example from a T3 Code build that shares its usage poll, Agent Pulse uses it for banked resets instead of asking again. While T3 Code reports it is polling a login there, Agent Pulse does not ask Anthropic for that login itself.
+History labels are not verified login identities. The main account keeps its current-login quota when selected. A named account shows limits when an agent usage record under `~/.local/state/omarchy/agents/usage/` has the same record id as the account, a provider-qualified id such as `codex:work`, or an unambiguous name matching the account label. The account detail states when quota or token history is unavailable. A separate agent record without a linked folder shows its limits and asks you to link history in Settings, rather than showing another login's tokens. Accounts without their own quota record never inherit the main login's limits. This version does not switch authentication or fetch every account's limits, with one exception: each Antigravity account that T3 Code keeps signed in is asked for its own limits and plan (see [provider coverage](provider-coverage.md)). An account label that already names its provider ("Antigravity-Becca") is shown as is rather than as "Antigravity · Antigravity-Becca". When a recent shared Claude reading exists in `~/.cache/claude-usage/`, for example from a T3 Code build that shares its usage poll, Agent Pulse uses it for banked resets instead of asking again. While T3 Code reports it is polling a login there, Agent Pulse does not ask Anthropic for that login itself.
 
 Optional monthly prices can be set per provider (the local history group) or per labelled account. Imported, conflicting, and unassigned histories never inherit the local price. API estimates still use the same recorded costs and catalog rules in every account view.
 

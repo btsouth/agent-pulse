@@ -1283,6 +1283,13 @@ Scope {
                                                     Label { text: modelData.title || modelData.label; Layout.fillWidth: true; elide: Text.ElideRight }
                                                     Sub { text: Math.round(Number(modelData.percent || 0) * 100) + "% used" }
                                                 }
+                                                // Which models share this window, when the
+                                                // provider groups them (Antigravity).
+                                                Sub {
+                                                    visible: !!modelData.detail
+                                                    width: parent.width; wrapMode: Text.WordWrap; font.pixelSize: 10
+                                                    text: modelData.detail ? "Covers " + modelData.detail : ""
+                                                }
                                                 Rectangle {
                                                     width: parent.width; height: 4; radius: 2; color: root.edge
                                                     Rectangle { height: 4; radius: 2; width: parent.width * Math.min(1,Math.max(0,Number(modelData.percent || 0))); color: modelData.percent >= 0.9 ? root.colorFor("claude") : root.accent }
@@ -1542,7 +1549,7 @@ Scope {
                                             required property var modelData
                                             width: providerColumn.width; spacing: 4
                                             RowLayout { width: parent.width
-                                                Sub { text: modelData.label }
+                                                Sub { text: modelData.title || modelData.label }
                                                 Item { Layout.fillWidth: true }
                                                 Label { text: (modelData.percent*100).toFixed(0)+"% used"; font.pixelSize: 11 }
                                             }
