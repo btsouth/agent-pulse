@@ -1149,6 +1149,98 @@ class CollectorTests(unittest.TestCase):
             self.assertEqual(scoped['summary']['tokens'], 55)
             ledger.db.close()
 
+    def antigravity_two_profiles(self, names, enabled=(True, True), accounts=()):
+        ids = ['antigravity_one', 'antigravity_two']
+        roots = self.t3_antigravity({i: {'driver': 'antigravity', 'displayName': n, 'enabled': e}
+                                     for i, n, e in zip(ids, names, enabled)}, signed_in=ids)
+        now = int(time.time()) - 60
+        self.antigravity_db('.gemini/antigravity-cli/conversations/main.db',
+                            [self.ag_generation(self.ag_usage(10, 0), model='gemini-3.8-flash-high', request_id='m')], times=[now])
+        for index, instance in enumerate(ids):
+            db = roots[instance].relative_to(self.root) / 'conversations/c.db'
+            self.antigravity_db(str(db), [self.ag_generation(self.ag_usage(20 * (index + 1), 0), model='gemini-3.8-flash-high',
+                                                             request_id='r' + str(index))], times=[now])
+        ledger = c.Ledger(self.root / 'state/usage.sqlite')
+        cfg = c.DEFAULTS | {'enabled': ['antigravity'], 'accounts': list(accounts)}
+        ledger.scan(cfg)
+        quotas = {'antigravity': {}}
+        for index, profile in enumerate(c.antigravity_profiles()):
+            quotas[profile['record']] = {'limits': [self.antigravity_window('Gemini 5-hour', 'Gemini · 5-hour', r'^gemini', 0.1 * (index + 1))],
+                                         'plan': 'Plan ' + str(index), 'error': '', 'updatedAt': 'now'}
+        with patch.object(c, 'antigravity_quotas', return_value=(c.antigravity_profiles(), quotas)):
+            c.write_antigravity_records(ledger, cfg)
+        return ledger, cfg, roots
+
+    def test_antigravity_accounts_with_the_same_name_keep_their_own_quota_and_history(self):
+        with patch.object(c, 'STATE', self.root / 'state'), patch.object(c, 'HOME', self.root), \
+             patch.dict('os.environ', self.sandbox_env()):
+            ledger, cfg, _ = self.antigravity_two_profiles(['Antigravity Alt', 'Antigravity Alt'])
+            usage = self.root / 'agents/usage'
+            records = {p.stem: json.loads(p.read_text()) for p in usage.glob('antigravity-*.json')}
+            self.assertEqual(sorted(r['totalPrompts'] for r in records.values()), [1, 1])
+            self.assertEqual(sorted(r['modelUsage']['gemini-3.8-flash-high']['inputTokens'] for r in records.values()), [20, 40])
+            views = [v for v in c.report(ledger, cfg, days=1)['accountViews'] if v['accountId'] != 'local']
+            self.assertEqual(sorted(v['quota']['plan'] for v in views), ['Plan 0', 'Plan 1'])
+            targets = c.record_targets(cfg)
+            self.assertEqual(len({targets[key][1] for key in records}), 2)
+            ledger.db.close()
+
+    def test_antigravity_profile_in_a_named_account_keeps_one_account(self):
+        with patch.object(c, 'STATE', self.root / 'state'), patch.object(c, 'HOME', self.root), \
+             patch.dict('os.environ', self.sandbox_env()):
+            import hashlib
+            root = self.root / '.t3/userdata/providers/antigravity' / hashlib.sha256(b'antigravity_one').hexdigest() / 'antigravity-acp'
+            named = {'id': 'custom', 'label': 'Custom label', 'directories': [{'provider': 'antigravity', 'path': str(root)}]}
+            ledger, cfg, _ = self.antigravity_two_profiles(['Work', 'Other'], accounts=[named])
+            record = json.loads((self.root / 'agents/usage/antigravity-one.json').read_text())
+            self.assertEqual((record['account'], record['totalPrompts']), ('custom', 1))
+            view = next(v for v in c.report(ledger, cfg, days=1)['accountViews'] if v['accountId'] == 'custom')
+            self.assertEqual(view['quota']['plan'], 'Plan 0')
+            self.assertFalse(any(v['accountId'] != 'custom' and 'Work' in v['name'] for v in c.report(ledger, cfg, days=1)['accountViews']))
+            ledger.db.close()
+
+    def test_disabled_antigravity_profile_keeps_its_history(self):
+        with patch.object(c, 'STATE', self.root / 'state'), patch.object(c, 'HOME', self.root), \
+             patch.dict('os.environ', self.sandbox_env()):
+            ledger, cfg, _ = self.antigravity_two_profiles(['One', 'Two'], enabled=(True, False))
+            usage = self.root / 'agents/usage'
+            self.assertEqual(sorted(p.name for p in usage.iterdir()), ['antigravity-one.json', 'antigravity.json'])
+            main = json.loads((usage / 'antigravity.json').read_text())
+            self.assertEqual(main['modelUsage']['gemini-3.8-flash-high']['inputTokens'], 10)
+            ledger.db.close()
+
+    def test_antigravity_view_usage_offers_only_the_group_models(self):
+        with patch.object(c, 'STATE', self.root / 'state'), patch.object(c, 'HOME', self.root), \
+             patch.dict('os.environ', self.sandbox_env()):
+            ledger, cfg = self.antigravity_accounts_ledger()
+            limits = [self.antigravity_window('Gemini 5-hour', 'Gemini · 5-hour', r'^gemini(?!.*argon)')]
+            quota_ = {'limits': limits, 'plan': '', 'error': '', 'updatedAt': 'now'}
+            (self.root / 'state/antigravity-quota.json').write_text(json.dumps(quota_))
+            with patch.object(c, 'antigravity_quotas', return_value=(c.antigravity_profiles(), {'antigravity': quota_, 'antigravity-becca': quota_})):
+                c.write_antigravity_records(ledger, cfg)
+            view = next(v for v in c.report(ledger, cfg, days=1)['accountViews'] if v['name'] == 'Antigravity-Becca')
+            scoped = c.report(ledger, cfg, days=1, provider='antigravity',
+                              selection={'account': view['accountId'], 'resetWindow': view['quota']['limits'][0]['windowId']})
+            offered = json.dumps(scoped.get('modelOptions', scoped.get('models', [])))
+            self.assertIn('gemini', offered)
+            self.assertNotIn('claude', offered)
+            ledger.db.close()
+
+    def test_antigravity_plan_lookup_is_daily_even_when_it_fails(self):
+        binary = self.root / 'agy'; binary.write_text('')
+        calls = []
+        clock = [1_000_000.0]
+        with contextlib.ExitStack() as stack:
+            for item in self.antigravity_patches(binary, self.antigravity_run(), access='token'): stack.enter_context(item)
+            stack.enter_context(patch.object(c, 'antigravity_plan', side_effect=lambda token: calls.append(token) or ''))
+            stack.enter_context(patch.object(c.time, 'time', side_effect=lambda: clock[0]))
+            c.antigravity_quota(True)
+            clock[0] += 301
+            c.antigravity_quota()
+            clock[0] += 86400
+            c.antigravity_quota()
+        self.assertEqual(calls, ['token', 'token'])
+
     def test_antigravity_single_account_record_is_unchanged(self):
         with patch.object(c, 'STATE', self.root / 'state'), patch.object(c, 'HOME', self.root), \
              patch.dict('os.environ', self.sandbox_env()):

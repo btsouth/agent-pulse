@@ -83,17 +83,26 @@ Panel {
     pinProcess.running = true
   }
 
+  // The saved pin for a window. A pin saved before its window gained a title
+  // still matches by label while that label is unique, as pinnedWindow reads it.
+  function savedPin(providerId, label, title) {
+    var mine = pinnedLimits.filter(function(pin) { return pin.provider === providerId && pin.label === label })
+    var exact = mine.find(function(pin) { return pin.title === title })
+    if (exact || mine.length !== 1) return exact || null
+    var p = providers.find(function(item) { return item.providerId === providerId })
+    var sameLabel = p ? limitWindows(p).filter(function(w) { return w.label === label }) : []
+    return sameLabel.length === 1 ? mine[0] : null
+  }
+
   function isPinned(providerId, label, title) {
-    return pinnedLimits.some(function(pin) {
-      return pin.provider === providerId && pin.label === label && pin.title === title
-    })
+    return !!savedPin(providerId, label, title)
   }
 
   function togglePin(providerId, window) {
     if (!window) return
-    var remove = isPinned(providerId, window.label, window.title)
-    if (!remove && pinnedLimits.length >= 3) { pinError = "Three pins maximum · unpin one first"; return }
-    savePin({provider: providerId, label: window.label, title: window.title}, remove)
+    var saved = savedPin(providerId, window.label, window.title)
+    if (!saved && pinnedLimits.length >= 3) { pinError = "Three pins maximum · unpin one first"; return }
+    savePin(saved || {provider: providerId, label: window.label, title: window.title}, !!saved)
   }
 
   function barClockPattern(config) {

@@ -269,7 +269,7 @@ def history_config(cfg):
         add_home(instance['provider'], instance['root'], 't3-' + digest(instance['id'])[:16], instance['label'])
     # T3 keeps no home path for Antigravity. An instance with a sign-in of its
     # own is another Google account; one on the keyring is the main login.
-    for profile in antigravity_profiles():
+    for profile in antigravity_profiles(include_disabled=True):
         add_home('antigravity', profile['root'], 't3-' + digest(profile['id'])[:16], profile['name'])
     for key in HOME_KEYS:
         provider = key.removesuffix('Homes')
@@ -282,7 +282,9 @@ def history_config(cfg):
     records = agent_records()
     for key, record in records.items():
         if key in PROVIDERS: continue
-        matches = [a for a in accounts if a['id'] == key or any(key == d['provider'] + ':' + a['id'] for d in a['directories'])]
+        # A record that names its ledger account is bound to it, whatever its name.
+        matches = [a for a in accounts if record.get('account') and a['id'] == record['account']]
+        matches = matches or [a for a in accounts if a['id'] == key or any(key == d['provider'] + ':' + a['id'] for d in a['directories'])]
         if not matches:
             matches = [a for a in accounts if record.get('name') and a['label'].casefold() == str(record['name']).casefold()]
         if len(matches) == 1:
@@ -1968,7 +1970,7 @@ def antigravity_slug(instance_id):
     return '-'.join(words)[:60] or digest(instance_id)[:12]
 
 
-def antigravity_profiles():
+def antigravity_profiles(include_disabled=False):
     """T3 Code Antigravity instances that keep a sign-in of their own.
 
     T3 runs each Antigravity instance with its profile at
@@ -1978,6 +1980,8 @@ def antigravity_profiles():
     instance a second account. An instance without one signs in through the
     keyring, which is the CLI's own login, so its history stays with the main
     account. Only whether the file exists is read here; nothing in it is.
+    A disabled instance is asked for no quota, but its history stays its own
+    (include_disabled), rather than folding into the main account.
     """
     try: data = json.loads((HOME / '.t3/userdata/settings.json').read_text())
     except (OSError, ValueError): return []
@@ -1985,7 +1989,7 @@ def antigravity_profiles():
     if not isinstance(instances, dict): return []
     found, records = [], set()
     for instance_id, instance in instances.items():
-        if not isinstance(instance, dict) or instance.get('enabled') is False: continue
+        if not isinstance(instance, dict) or (instance.get('enabled') is False and not include_disabled): continue
         if provider_key(instance.get('driver')) != 'antigravity': continue
         root = HOME / ANTIGRAVITY_T3_ROOT / hashlib.sha256(str(instance_id).encode()).hexdigest() / 'antigravity-acp'
         if not (root / 'antigravity-oauth-token').is_file(): continue
@@ -2043,8 +2047,9 @@ def antigravity_plan(token):
     account is on Antigravity's free tier."""
     if not token: return ''
     request = urllib.request.Request(CLOUD_CODE_URL + '/v1internal:loadCodeAssist', data=b'{}', method='POST',
-                                     headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
-                                              'User-Agent': 'antigravity'})
+                                     headers={'Content-Type': 'application/json', 'User-Agent': 'antigravity'})
+    # Never carried to wherever a redirect points.
+    request.add_unredirected_header('Authorization', 'Bearer ' + token)
     with urllib.request.urlopen(request, timeout=10) as response: data = json.loads(response.read())
     paid = data.get('paidTier') if isinstance(data, dict) else None
     if isinstance(paid, dict) and str(paid.get('name') or '').strip(): return str(paid['name']).strip()
@@ -2121,7 +2126,7 @@ def antigravity_quota(force=False, profile=None):
         if code != 0: raise ValueError('Antigravity usage command failed.')
         windows = antigravity_limits(json.loads(out))
         plan, checked = cached.get('plan', ''), cached.get('planCheckedAt', 0)
-        if time.time() - checked >= 86400 or not plan:
+        if time.time() - checked >= 86400:
             try:
                 access = token_access(home / '.gemini/antigravity-cli/antigravity-oauth-token') if home else main_antigravity_access()
                 plan = antigravity_plan(access) or plan
@@ -2613,7 +2618,8 @@ def record_targets(cfg):
             targets[path.stem] = ({path.stem}, 'local', limits)
             continue
         name = str(d.get('name') or '').casefold()
-        account = next((a for a in cfg.get('accounts', [])
+        bound = next((a for a in cfg.get('accounts', []) if d.get('account') and a['id'] == d['account']), None)
+        account = bound or next((a for a in cfg.get('accounts', [])
                         if a.get('recordId', a['id']) == path.stem or path.stem == a['id']
                         or path.stem == 'codex:' + a['id'] or (name and str(a['label']).casefold() == name)), None)
         if account:
@@ -2831,6 +2837,7 @@ def report(ledger, cfg, days=7, provider='all', now=None, selection=None):
         if selection.get('account') and account != selection['account']: continue
         if p not in providers or (provider != 'all' and p != provider): continue
         if p in excluded_sources: continue
+        if reset_scope and not reset_scope.search(str(r['model'] or '').casefold()): continue
         day = str(dt.datetime.fromtimestamp(r['ts']).date())
         # Recorded before the selection is applied, so the model options describe
         # what this scope holds rather than what is currently being looked at.
@@ -2840,7 +2847,6 @@ def report(ledger, cfg, days=7, provider='all', now=None, selection=None):
             family_name = model_family(r['model'])
             model_options[family_name] = model_options.get(family_name, 0) + sum(r[f] for f in FIELDS[:4])
         if not selected(r, selection, p): continue
-        if reset_scope and not reset_scope.search(str(r['model'] or '').casefold()): continue
         if selected_hour is None and previous_start <= r['ts'] < previous_end and (not previous_date or day == str(previous_date)):
             value, savings, tier = price_detail(r, rates['document'])
             add(previous, r, value, savings, tier)
@@ -3075,9 +3081,11 @@ def write_agent_record(ledger, provider, record_id=None, name=None, account=None
        'recentDays': [{'date': x['date'], 'messageCount': x['providers'][provider]['tokens']} for x in data['daily']],
        'modelUsage': {}}
     if record_id != provider:
-        # Ties the record to its provider for the panel and the dashboard, and
-        # marks it as ours so it is removed when the login goes away.
+        # Ties the record to its provider and ledger account for the panel and
+        # the dashboard, and marks it as ours so it is removed when the login
+        # goes away.
         record_data |= {'provider': provider, 'writer': 'agent-pulse'}
+        if account: record_data['account'] = account
     # A prepaid balance is part of the account's state the card shows, so it
     # travels with the record the panel reads. Providers without one leave the
     # key out rather than carrying a null.
@@ -3095,10 +3103,14 @@ def write_antigravity_records(ledger, cfg, force=False):
     account the main record counts only the main account's history, and a
     record this collector wrote for a sign-in that is gone is removed."""
     profiles, quotas = antigravity_quotas(force)
-    write_agent_record(ledger, 'antigravity', account='local' if profiles else None, q=quota('antigravity'), cfg=cfg)
+    owners = source_account(cfg)
+    write_agent_record(ledger, 'antigravity', account='local' if antigravity_profiles(include_disabled=True) else None,
+                       q=quota('antigravity'), cfg=cfg)
     for profile in profiles:
-        write_agent_record(ledger, 'antigravity', profile['record'], profile['name'],
-                           't3-' + digest(profile['id'])[:16], quotas[profile['record']], cfg)
+        # The account holding the profile's folder: T3's own entry, or a named
+        # account the user already put that folder in.
+        account = owners('antigravity', str(Path(profile['root']) / 'conversations/any.db'))
+        write_agent_record(ledger, 'antigravity', profile['record'], profile['name'], account, quotas[profile['record']], cfg)
     current = {profile['record'] for profile in profiles}
     for path in (STATE.parent / 'agents/usage').glob('antigravity-*.json'):
         if path.stem in current: continue
