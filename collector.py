@@ -269,8 +269,15 @@ def history_config(cfg):
         add_home(instance['provider'], instance['root'], 't3-' + digest(instance['id'])[:16], instance['label'])
     # T3 keeps no home path for Antigravity. An instance with a sign-in of its
     # own is another Google account; one on the keyring is the main login.
+    # Its quota is bound to the record written for it, never found by name,
+    # and a named account holding any part of its folder already owns it.
     for profile in antigravity_profiles(include_disabled=True):
-        add_home('antigravity', profile['root'], 't3-' + digest(profile['id'])[:16], profile['name'])
+        root = Path(profile['root']).resolve()
+        if any(d['provider'] == 'antigravity' and Path(d['path']).expanduser().resolve().is_relative_to(root)
+               for a in accounts for d in a['directories']): continue
+        before = len(accounts)
+        add_home('antigravity', root, 't3-' + digest(profile['id'])[:16], profile['name'])
+        if len(accounts) > before: accounts[-1]['quotaBound'] = True
     for key in HOME_KEYS:
         provider = key.removesuffix('Homes')
         routes = HERMES_ROUTES if provider == 'hermes' else ('opencode', 'opencode-go') if provider == 'opencode' else (provider,)
@@ -2525,7 +2532,7 @@ def account_views(ledger, cfg, labels, assignments, now):
             # Provider-qualified records take precedence; special histories
             # and names that collide with default provider ids never borrow a login.
             q = None if aid in PROVIDERS or aid in ('unassigned', 'conflict') or aid.startswith('machine:') else (
-                by_id.get(p + ':' + aid) or by_id.get(record_id) or by_name.get(label.casefold()))
+                by_id.get(p + ':' + aid) or by_id.get(record_id) or (None if a.get('quotaBound') else by_name.get(label.casefold())))
             if q is not None and q.get('provider') not in (None, p): q = None
             scope = 'From its own usage record' if q is not None else ''
             q = q or {'limits': [], 'error': 'No quota record linked to this account; current login quota belongs to its own account.'}
@@ -2623,7 +2630,9 @@ def record_targets(cfg):
                         if a.get('recordId', a['id']) == path.stem or path.stem == a['id']
                         or path.stem == 'codex:' + a['id'] or (name and str(a['label']).casefold() == name)), None)
         if account:
-            targets[path.stem] = ({x['provider'] for x in account['directories']}, account['id'], limits)
+            # A record bound to its account speaks for its own provider only.
+            providers = {d['provider']} if bound and d.get('provider') in PROVIDERS else {x['provider'] for x in account['directories']}
+            targets[path.stem] = (providers, account['id'], limits)
     return targets
 
 

@@ -1241,6 +1241,38 @@ class CollectorTests(unittest.TestCase):
             c.antigravity_quota()
         self.assertEqual(calls, ['token', 'token'])
 
+    def test_antigravity_conversations_folder_in_a_named_account_adds_no_empty_account(self):
+        with patch.object(c, 'STATE', self.root / 'state'), patch.object(c, 'HOME', self.root), \
+             patch.dict('os.environ', self.sandbox_env()):
+            import hashlib
+            root = self.root / '.t3/userdata/providers/antigravity' / hashlib.sha256(b'antigravity_one').hexdigest() / 'antigravity-acp'
+            named = {'id': 'custom', 'label': 'Custom label', 'directories': [{'provider': 'antigravity', 'path': str(root / 'conversations')}]}
+            ledger, cfg, _ = self.antigravity_two_profiles(['Work', 'Other'], accounts=[named])
+            ids = [v['accountId'] for v in c.report(ledger, cfg, days=1)['accountViews']]
+            self.assertIn('custom', ids)
+            self.assertNotIn('t3-' + c.digest('antigravity_one')[:16], ids)
+            ledger.db.close()
+
+    def test_disabled_antigravity_profile_never_borrows_a_same_named_quota(self):
+        with patch.object(c, 'STATE', self.root / 'state'), patch.object(c, 'HOME', self.root), \
+             patch.dict('os.environ', self.sandbox_env()):
+            ledger, cfg, _ = self.antigravity_two_profiles(['Same', 'Same'], enabled=(True, False))
+            views = {v['accountId']: v for v in c.report(ledger, cfg, days=1)['accountViews']}
+            self.assertEqual(views['t3-' + c.digest('antigravity_one')[:16]]['quota']['plan'], 'Plan 0')
+            self.assertEqual(views['t3-' + c.digest('antigravity_two')[:16]]['quota']['limits'], [])
+            ledger.db.close()
+
+    def test_bound_antigravity_record_counts_only_antigravity(self):
+        with patch.object(c, 'STATE', self.root / 'state'), patch.object(c, 'HOME', self.root), \
+             patch.dict('os.environ', self.sandbox_env()):
+            import hashlib
+            root = self.root / '.t3/userdata/providers/antigravity' / hashlib.sha256(b'antigravity_one').hexdigest() / 'antigravity-acp'
+            named = {'id': 'work', 'label': 'Work', 'directories': [{'provider': 'antigravity', 'path': str(root)},
+                                                                   {'provider': 'gemini', 'path': str(self.root / 'gem')}]}
+            ledger, cfg, _ = self.antigravity_two_profiles(['Work', 'Other'], accounts=[named])
+            self.assertEqual(c.record_targets(cfg)['antigravity-one'][0], {'antigravity'})
+            ledger.db.close()
+
     def test_antigravity_single_account_record_is_unchanged(self):
         with patch.object(c, 'STATE', self.root / 'state'), patch.object(c, 'HOME', self.root), \
              patch.dict('os.environ', self.sandbox_env()):
