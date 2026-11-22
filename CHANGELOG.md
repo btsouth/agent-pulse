@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.13.1 - 2026-11-22
+
+- A T3 Code Antigravity instance signed in to the same Google account as the `agy` CLI no longer shows up as a second Antigravity account. Signing T3's own Antigravity instance in again (which leaves a sign-in file in its profile) made it look like a separate account, with a duplicate "Antigravity" in the bar panel and dashboard. Its history now counts toward the main account again.
+
 ## 1.13.0 - 2026-11-20
 
 - Show every Antigravity quota group. Gemini models, Claude and GPT models, and Gemini 4 Argon each get their own meters, titled after the group ("Gemini · Weekly", "Claude & GPT · 5-hour", "Gemini 4 Argon · Weekly"), instead of Argon's weekly window appearing as a second "Gemini weekly" and every window reading as plain "Session" or "Weekly" in the bar panel. Existing pins keep working. The dashboard lists the models each group covers.

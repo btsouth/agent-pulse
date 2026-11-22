@@ -1982,7 +1982,7 @@ def antigravity_slug(instance_id):
     return '-'.join(words)[:60] or digest(instance_id)[:12]
 
 
-def antigravity_profiles(include_disabled=False):
+def antigravity_profiles(include_disabled=False, every_signin=False):
     """T3 Code Antigravity instances that keep a sign-in of their own.
 
     T3 runs each Antigravity instance with its profile at
@@ -1991,9 +1991,12 @@ def antigravity_profiles(include_disabled=False):
     antigravity-acp/antigravity-oauth-token. That file is what makes the
     instance a second account. An instance without one signs in through the
     keyring, which is the CLI's own login, so its history stays with the main
-    account. Only whether the file exists is read here; nothing in it is.
+    account. So does one whose file signs in to the same Google account as
+    the CLI: the last scan decided that (antigravity_same_logins), so only
+    whether the file exists is read here; nothing in it is.
     A disabled instance is asked for no quota, but its history stays its own
     (include_disabled), rather than folding into the main account.
+    every_signin lists each instance with a file, the main login's included.
     """
     try: data = json.loads((HOME / '.t3/userdata/settings.json').read_text())
     except (OSError, ValueError): return []
@@ -2003,9 +2006,11 @@ def antigravity_profiles(include_disabled=False):
     # carry a digest, so no instance's id depends on which others are on.
     antigravity = {i: v for i, v in instances.items() if isinstance(v, dict) and provider_key(v.get('driver')) == 'antigravity'}
     slugs = collections.Counter(antigravity_slug(i) for i in antigravity)
+    same = set() if every_signin else antigravity_same_logins()
     found = []
     for instance_id, instance in antigravity.items():
         if instance.get('enabled') is False and not include_disabled: continue
+        if str(instance_id) in same: continue
         root = HOME / ANTIGRAVITY_T3_ROOT / hashlib.sha256(str(instance_id).encode()).hexdigest() / 'antigravity-acp'
         if not (root / 'antigravity-oauth-token').is_file(): continue
         slug = antigravity_slug(instance_id)
@@ -2013,6 +2018,34 @@ def antigravity_profiles(include_disabled=False):
         found.append({'id': str(instance_id), 'record': record, 'root': str(root),
                       'name': str(instance.get('displayName') or instance_id).strip() or record})
     return found
+
+
+def antigravity_same_logins():
+    """T3 instances whose own sign-in file is the CLI's Google account, as the
+    last scan found them."""
+    try: data = json.loads((STATE / 'antigravity-logins.json').read_text())
+    except (OSError, ValueError): return set()
+    same = data.get('sameAsMain') if isinstance(data, dict) else None
+    return {str(i) for i in same} if isinstance(same, list) else set()
+
+
+def signin_email(data):
+    return str(data.get('id_token_email') or '').strip().casefold() if isinstance(data, dict) else ''
+
+
+def note_same_logins(signins):
+    """Records which T3 sign-ins are the main login's Google account, by
+    comparing the account email each sign-in carries. Only instance ids are
+    kept. When the main login's email can't be read (a locked keyring), the
+    last answer stands rather than splitting the account apart."""
+    main = signin_email(main_antigravity_signin())
+    if not main: return
+    same = []
+    for profile in signins:
+        try: data = json.loads((Path(profile['root']) / 'antigravity-oauth-token').read_text())
+        except (OSError, ValueError): continue
+        if signin_email(data) == main: same.append(profile['id'])
+    atomic_json(STATE / 'antigravity-logins.json', {'sameAsMain': sorted(same)})
 
 
 def antigravity_binary():
@@ -2089,15 +2122,30 @@ def fresh_access(data):
     return str(token['access_token'])
 
 
-def main_antigravity_access():
-    """The main login's access token, read the way agy keeps it: in the
-    Secret Service keyring, or in its own file where there is no keyring."""
+def keyring_antigravity_signin():
+    """The main login's sign-in as agy keeps it in the Secret Service keyring."""
     try:
         raw = subprocess.run(['secret-tool', 'lookup', 'service', 'gemini', 'username', 'antigravity'],
                              capture_output=True, text=True, timeout=3, stdin=subprocess.DEVNULL).stdout
-        found = fresh_access(json.loads(raw)) if raw.strip() else ''
-    except (OSError, ValueError, subprocess.SubprocessError): found = ''
-    return found or token_access(HOME / '.gemini/antigravity-cli/antigravity-oauth-token')
+        found = json.loads(raw) if raw.strip() else None
+    except (OSError, ValueError, subprocess.SubprocessError): found = None
+    return found if isinstance(found, dict) else {}
+
+
+def main_antigravity_signin():
+    """The main login's sign-in: the keyring's, or agy's own file where there
+    is no keyring."""
+    found = keyring_antigravity_signin()
+    if found: return found
+    try: found = json.loads((HOME / '.gemini/antigravity-cli/antigravity-oauth-token').read_text())
+    except (OSError, ValueError): return {}
+    return found if isinstance(found, dict) else {}
+
+
+def main_antigravity_access():
+    """The main login's access token, read the way agy keeps it: in the
+    Secret Service keyring, or in its own file where there is no keyring."""
+    return fresh_access(keyring_antigravity_signin()) or token_access(HOME / '.gemini/antigravity-cli/antigravity-oauth-token')
 
 
 def antigravity_quota(force=False, profile=None):
@@ -2166,6 +2214,9 @@ def antigravity_quotas(force=False):
     base = antigravity_run_dir()
     if base.is_dir():
         for leftover in base.iterdir(): shutil.rmtree(leftover, ignore_errors=True)
+    # A T3 instance signed in to the CLI's own Google account is the main
+    # login again, not a second account.
+    note_same_logins(antigravity_profiles(include_disabled=True, every_signin=True))
     profiles = antigravity_profiles()
     results = {'antigravity': antigravity_quota(force)}
     for profile in profiles: results[profile['record']] = antigravity_quota(force, profile)
