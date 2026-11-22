@@ -970,7 +970,7 @@ class CollectorTests(unittest.TestCase):
             self.assertIn('Install', quota['error'])
             run.assert_not_called()
 
-    def t3_antigravity(self, instances, signed_in=()):
+    def t3_antigravity(self, instances, signed_in=(), emails=None):
         settings = self.root / '.t3/userdata/settings.json'
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_text(json.dumps({'providerInstances': instances}))
@@ -981,7 +981,8 @@ class CollectorTests(unittest.TestCase):
             if instance_id in signed_in:
                 token = root / 'antigravity-oauth-token'
                 token.write_text(json.dumps({'token': {'access_token': 'access-' + instance_id, 'refresh_token': 'refresh',
-                                                       'expiry': '2099-01-01T00:00:00Z'}, 'auth_method': 'consumer'}))
+                                                       'expiry': '2099-01-01T00:00:00Z'}, 'auth_method': 'consumer',
+                                         **({'id_token_email': emails[instance_id]} if instance_id in (emails or {}) else {})}))
                 token.chmod(0o600)
             roots[instance_id] = root
         return roots
@@ -1150,6 +1151,84 @@ class CollectorTests(unittest.TestCase):
                               selection={'account': becca_view['accountId'], 'resetWindow': window['windowId']})
             self.assertEqual(scoped['summary']['tokens'], 55)
             ledger.db.close()
+
+    def test_antigravity_instance_signed_in_to_the_main_account_is_not_a_second_one(self):
+        # T3's own Antigravity instance can keep a sign-in file for the CLI's
+        # Google account; that is still the main login, not a third account.
+        roots = self.t3_antigravity({
+            'antigravity': {'driver': 'antigravity', 'displayName': 'Antigravity'},
+            'antigravity_antigravity_becca': {'driver': 'antigravity', 'displayName': 'Antigravity-Becca'}},
+            signed_in=('antigravity', 'antigravity_antigravity_becca'),
+            emails={'antigravity': 'Me@Example.com', 'antigravity_antigravity_becca': 'becca@example.com'})
+        now = int(time.time()) - 60
+        self.antigravity_db('.gemini/antigravity-cli/conversations/main.db',
+                            [self.ag_generation(self.ag_usage(1000, 10), model='gemini-3.8-flash-high', request_id='m1')], times=[now])
+        main_t3 = roots['antigravity'].relative_to(self.root) / 'conversations/t3main.db'
+        self.antigravity_db(str(main_t3), [self.ag_generation(self.ag_usage(300, 3), model='gemini-3.8-flash-high', request_id='m2')], times=[now])
+        becca = roots['antigravity_antigravity_becca'].relative_to(self.root) / 'conversations/becca.db'
+        self.antigravity_db(str(becca), [self.ag_generation(self.ag_usage(50, 5), model='gemini-3.8-flash-high', request_id='b1')], times=[now])
+        binary = self.root / 'agy'; binary.write_text('')
+        usage = self.root / 'agents/usage'
+        with contextlib.ExitStack() as stack:
+            for item in self.antigravity_patches(binary, self.antigravity_run()): stack.enter_context(item)
+            stack.enter_context(patch.dict('os.environ', self.sandbox_env()))
+            keyring = stack.enter_context(patch.object(c, 'keyring_antigravity_signin', return_value={}))
+            ledger = c.Ledger(self.root / 'state/usage.sqlite')
+            cfg = c.DEFAULTS | {'enabled': ['antigravity']}
+            ledger.scan(cfg)
+            # Before the main login's account is known, the file looks like a
+            # second account.
+            c.write_antigravity_records(ledger, cfg, force=True)
+            self.assertEqual(len(list(usage.glob('antigravity-*.json'))), 2)
+            # A locked keyring is asked again an hour later, not every scan.
+            calls = keyring.call_count
+            c.write_antigravity_records(ledger, cfg, force=True)
+            self.assertEqual(keyring.call_count, calls)
+            logins = self.root / 'state/antigravity-logins.json'
+            logins.write_text(json.dumps(json.loads(logins.read_text()) | {'checkedAt': time.time() - 86400}))
+            keyring.return_value = {'id_token_email': 'me@example.com'}
+            c.write_antigravity_records(ledger, cfg, force=True)
+            self.assertEqual(sorted(p.name for p in usage.glob('antigravity*.json')), ['antigravity-becca.json', 'antigravity.json'])
+            self.assertEqual(sorted(p.name for p in (self.root / 'state').glob('antigravity-quota*.json')),
+                             ['antigravity-quota-becca.json', 'antigravity-quota.json'])
+            main = json.loads((usage / 'antigravity.json').read_text())
+            self.assertEqual(main['modelUsage']['gemini-3.8-flash-high']['inputTokens'], 1300)
+            becca_record = json.loads((usage / 'antigravity-becca.json').read_text())
+            self.assertEqual(becca_record['modelUsage']['gemini-3.8-flash-high']['inputTokens'], 50)
+            views = [v['name'] for v in c.report(ledger, cfg, days=1)['accountViews'] if 'Antigravity' in v['name']]
+            self.assertEqual(len(views), 2)
+            # Unchanged sign-ins don't touch the keyring on later scans.
+            keyring.return_value = {}
+            calls = keyring.call_count
+            c.write_antigravity_records(ledger, cfg, force=True)
+            self.assertEqual(keyring.call_count, calls)
+            self.assertEqual(sorted(p.name for p in usage.glob('antigravity*.json')), ['antigravity-becca.json', 'antigravity.json'])
+            self.assertNotIn('example.com', logins.read_text())
+            # The daily recheck with a locked keyring keeps the last answer.
+            logins.write_text(json.dumps(json.loads(logins.read_text()) | {'checkedAt': time.time() - 86400}))
+            c.write_antigravity_records(ledger, cfg, force=True)
+            self.assertEqual(keyring.call_count, calls + 1)
+            self.assertEqual(sorted(p.name for p in usage.glob('antigravity*.json')), ['antigravity-becca.json', 'antigravity.json'])
+            # Signing T3's instance in to another account splits it out again.
+            token = roots['antigravity'] / 'antigravity-oauth-token'
+            token.write_text(json.dumps(json.loads(token.read_text()) | {'id_token_email': 'other@example.com'}))
+            keyring.return_value = {'id_token_email': 'me@example.com'}
+            c.write_antigravity_records(ledger, cfg, force=True)
+            self.assertEqual(len(list(usage.glob('antigravity-*.json'))), 2)
+            ledger.db.close()
+
+    def test_main_antigravity_email_prefers_the_keyring_entry(self):
+        cli = self.root / '.gemini/antigravity-cli/antigravity-oauth-token'
+        cli.parent.mkdir(parents=True)
+        cli.write_text(json.dumps({'id_token_email': 'File@Example.com'}))
+        with patch.object(c, 'HOME', self.root):
+            with patch.object(c, 'keyring_antigravity_signin', return_value={}):
+                self.assertEqual(c.main_antigravity_email(), 'file@example.com')
+            with patch.object(c, 'keyring_antigravity_signin', return_value={'id_token_email': 'key@example.com'}):
+                self.assertEqual(c.main_antigravity_email(), 'key@example.com')
+            # An entry without the email doesn't borrow an older file's account.
+            with patch.object(c, 'keyring_antigravity_signin', return_value={'token': {}}):
+                self.assertEqual(c.main_antigravity_email(), '')
 
     def antigravity_two_profiles(self, names, enabled=(True, True), accounts=()):
         ids = ['antigravity_one', 'antigravity_two']
