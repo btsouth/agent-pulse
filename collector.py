@@ -2035,17 +2035,31 @@ def signin_email(data):
 
 def note_same_logins(signins):
     """Records which T3 sign-ins are the main login's Google account, by
-    comparing the account email each sign-in carries. Only instance ids are
-    kept. When the main login's email can't be read (a locked keyring), the
-    last answer stands rather than splitting the account apart."""
-    main = signin_email(main_antigravity_signin())
-    if not main: return
-    same = []
+    comparing the account email each sign-in carries. Only instance ids and a
+    digest of the sign-ins are kept. The keyring is read only when a sign-in
+    file changes account, appears or goes, and once a day for the CLI's own
+    login, never on every scan. When the main login's email can't be read
+    (a locked keyring), the last answer stands rather than splitting the
+    account apart, and it is asked again an hour later."""
+    path = STATE / 'antigravity-logins.json'
+    try: state = json.loads(path.read_text())
+    except (OSError, ValueError): state = {}
+    if not isinstance(state, dict): state = {}
+    emails = {}
     for profile in signins:
-        try: data = json.loads((Path(profile['root']) / 'antigravity-oauth-token').read_text())
-        except (OSError, ValueError): continue
-        if signin_email(data) == main: same.append(profile['id'])
-    atomic_json(STATE / 'antigravity-logins.json', {'sameAsMain': sorted(same)})
+        try: emails[profile['id']] = signin_email(json.loads((Path(profile['root']) / 'antigravity-oauth-token').read_text()))
+        except (OSError, ValueError): emails[profile['id']] = ''
+    fingerprint = digest(sorted(emails.items()))
+    now = time.time()
+    if state.get('fingerprint') == fingerprint and now - float(state.get('checkedAt') or 0) < 86400: return
+    if not emails: main = ''
+    else: main = main_antigravity_email()
+    if emails and not main:
+        # Asked again in an hour; the last answer stands meanwhile.
+        atomic_json(path, state | {'fingerprint': fingerprint, 'checkedAt': now - 86400 + 3600})
+        return
+    same = sorted(i for i, email in emails.items() if email and email == main)
+    atomic_json(path, {'sameAsMain': same, 'fingerprint': fingerprint, 'checkedAt': now})
 
 
 def antigravity_binary():
@@ -2132,14 +2146,14 @@ def keyring_antigravity_signin():
     return found if isinstance(found, dict) else {}
 
 
-def main_antigravity_signin():
-    """The main login's sign-in: the keyring's, or agy's own file where there
-    is no keyring."""
+def main_antigravity_email():
+    """The main login's Google account: the keyring entry's, or agy's own
+    file's where there is no keyring entry. An entry without the email gives
+    '' rather than an older file's account."""
     found = keyring_antigravity_signin()
-    if found: return found
-    try: found = json.loads((HOME / '.gemini/antigravity-cli/antigravity-oauth-token').read_text())
-    except (OSError, ValueError): return {}
-    return found if isinstance(found, dict) else {}
+    if found: return signin_email(found)
+    try: return signin_email(json.loads((HOME / '.gemini/antigravity-cli/antigravity-oauth-token').read_text()))
+    except (OSError, ValueError): return ''
 
 
 def main_antigravity_access():
